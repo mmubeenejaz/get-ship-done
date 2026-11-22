@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Get Ship Done</title>
+<meta name="description" content="Get Ship Done by Mubeen: a Claude Code plugin that takes one requirement to a draft pull request with lanes, task cards, test-first building and a cold review.">
+<style>
+:root{--bg:#fbfaf7;--fg:#1f1e1c;--muted:#5f5e5a;--line:#d3d1c7;--card:#ffffff;--code:#f1efe8;--a:#534ab7;--a-bg:#eeedfe;--a-fg:#3c3489;--t:#0f6e56;--t-bg:#e1f5ee;--t-fg:#085041;--n-bg:#f1efe8;--n-fg:#2c2c2a}
+@media (prefers-color-scheme:dark){:root{--bg:#1a1a18;--fg:#ecebe6;--muted:#b4b2a9;--line:#444441;--card:#232321;--code:#2c2c2a;--a:#afa9ec;--a-bg:#3c3489;--a-fg:#eeedfe;--t:#5dcaa5;--t-bg:#085041;--t-fg:#e1f5ee;--n-bg:#2c2c2a;--n-fg:#ecebe6}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:860px;margin:0 auto;padding:48px 16px 64px}
+h1{font-size:40px;line-height:1.15;margin:0 0 8px;font-weight:650;letter-spacing:-.02em}
+h2{font-size:22px;margin:48px 0 12px;font-weight:600}
+p{margin:0 0 12px}
+.lead{font-size:19px;color:var(--muted);max-width:640px}
+.by{color:var(--a);font-weight:600}
+a{color:var(--a)}
+code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:14px}
+code{background:var(--code);padding:1px 5px;border-radius:4px}
+pre{background:var(--code);padding:14px 16px;border-radius:8px;overflow-x:auto;line-height:1.5;margin:0 0 12px}
+pre code{background:none;padding:0}
+.fig{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin:16px 0}
+svg{width:100%;height:auto;display:block}
+svg text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:14px;fill:var(--fg)}
+svg .s{font-size:12px;fill:var(--muted)}
+svg .h{font-weight:600}
+svg .na rect{fill:var(--a-bg);stroke:var(--a)}svg .na text{fill:var(--a-fg)}svg .na .s{fill:var(--a-fg);opacity:.8}
+svg .nt rect{fill:var(--t-bg);stroke:var(--t)}svg .nt text{fill:var(--t-fg)}svg .nt .s{fill:var(--t-fg);opacity:.8}
+svg .nn rect{fill:var(--n-bg);stroke:var(--line)}
+svg .grp{fill:none;stroke:var(--line);stroke-dasharray:4 3}
+svg .arr{stroke:var(--muted);stroke-width:1.2;fill:none}
+table{width:100%;border-collapse:collapse;font-size:15px;margin:8px 0 12px}
+th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:600;color:var(--muted);font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+.card h3{margin:0 0 6px;font-size:16px}
+.card p{margin:0;color:var(--muted);font-size:15px}
+.legend{display:flex;gap:20px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin-top:10px}
+.sw{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+footer{margin-top:56px;color:var(--muted);font-size:14px}
+@media (max-width:560px){h1{font-size:32px}.lead{font-size:17px}}
+</style>
+</head>
+<body>
+<main>
+<h1>Get Ship Done</h1>
+<p class="by">by Mubeen</p>
+<p class="lead">A Claude Code plugin that takes one requirement to a draft pull request: the right amount of ceremony for the change, unambiguous task cards, test-first building, the project's own gate, and a cold review where it pays.</p>
+
+<h2>How a run flows</h2>
+<div class="fig">
+<svg viewBox="0 0 680 500" role="img" aria-labelledby="f1t"><title id="f1t">Intake picks a lane; every lane builds by task cards, then gate and review, then ship; checkpoints allow a handoff</title>
+<defs><marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5"/></marker></defs>
+<g class="nn"><rect x="240" y="20" width="200" height="56" rx="8"/><text class="h" x="340" y="42" text-anchor="middle">Intake</text><text class="s" x="340" y="62" text-anchor="middle">lane and model</text></g>
+<g class="na"><rect x="60" y="120" width="170" height="56" rx="8"/><text class="h" x="145" y="142" text-anchor="middle">Direct</text><text class="s" x="145" y="162" text-anchor="middle">under 50 lines</text></g>
+<g class="na"><rect x="255" y="120" width="170" height="56" rx="8"/><text class="h" x="340" y="142" text-anchor="middle">Standard</text><text class="s" x="340" y="162" text-anchor="middle">one brief, one gate</text></g>
+<g class="na"><rect x="450" y="120" width="170" height="56" rx="8"/><text class="h" x="535" y="142" text-anchor="middle">Risky</text><text class="s" x="535" y="162" text-anchor="middle">spec + plan, two gates</text></g>
+<path class="arr" d="M340 76 L340 98 L145 98 L145 118" marker-end="url(#ar)"/><path class="arr" d="M340 76 L340 118" marker-end="url(#ar)"/><path class="arr" d="M340 76 L340 98 L535 98 L535 118" marker-end="url(#ar)"/>
+<path class="arr" d="M145 176 L145 198 L340 198 L340 218" marker-end="url(#ar)"/><path class="arr" d="M340 176 L340 218" marker-end="url(#ar)"/><path class="arr" d="M535 176 L535 198 L340 198 L340 218" marker-end="url(#ar)"/>
+<g class="nn"><rect x="240" y="220" width="200" height="56" rx="8"/><text class="h" x="340" y="242" text-anchor="middle">Build by task cards</text><text class="s" x="340" y="262" text-anchor="middle">test first, cheapest builder</text></g>
+<path class="arr" d="M340 276 L340 318" marker-end="url(#ar)"/>
+<g class="nn"><rect x="240" y="320" width="200" height="56" rx="8"/><text class="h" x="340" y="342" text-anchor="middle">Gate and review</text><text class="s" x="340" y="362" text-anchor="middle">prove tests, cold review</text></g>
+<path class="arr" d="M340 376 L340 418" marker-end="url(#ar)"/>
+<g class="nn"><rect x="240" y="420" width="200" height="56" rx="8"/><text class="h" x="340" y="442" text-anchor="middle">Ship</text><text class="s" x="340" y="462" text-anchor="middle">the PR is the record</text></g>
+<g class="nt"><rect x="470" y="320" width="170" height="56" rx="8"/><text class="h" x="555" y="342" text-anchor="middle">Checkpoints</text><text class="s" x="555" y="362" text-anchor="middle">hand off above 200k</text></g>
+<path class="arr" d="M468 348 L442 348" marker-end="url(#ar)"/>
+</svg>
+</div>
+
+<h2>Lanes</h2>
+<table>
+<tr><th>Lane</th><th>When</th><th>Documents</th><th>Approvals</th><th>Review</th></tr>
+<tr><td>Direct</td><td>Under about 50 lines, no open decision, nothing risky</td><td>None</td><td>The diff</td><td>Self-review</td></tr>
+<tr><td>Standard</td><td>One PR, nothing risky</td><td>One brief (spec and plan together)</td><td>1</td><td>Self-review, plus a cold review when the session runs below Opus</td></tr>
+<tr><td>Risky</td><td>Auth, permissions, tenant isolation, migrations, money, personal data, security, over about 400 lines, or several PRs</td><td>Spec, then plan</td><td>2</td><td>Self-review plus a cold review</td></tr>
+</table>
+
+<h2>Task cards: clear enough for a smaller model</h2>
+<p>Every brief and plan ends in task cards. A card is written so a builder that has read nothing else can do it right. Its level picks the builder: <code>mechanical</code> for Haiku, <code>standard</code> for Sonnet, <code>judgment</code> stays with the orchestrator.</p>
+<pre><code>### T2  Keep containers on unknown run state        level: mechanical
+Files:      e2e/ci-doctor.mjs (modify)
+Pattern:    copy doctorSteps() shape, e2e/ci-doctor.mjs:21
+Interface:  doctorSteps(state) -&gt; [{action:'keep'|'remove', name, runId}]
+Test first: e2e/housekeeping.test.ts "keeps a container when the run status cannot be read"
+Done when:  pnpm exec vitest run e2e/housekeeping.test.ts -&gt; 10 passed
+Don't:      change the start-runner or start-docker paths
+Stop if:    the test passes before the change</code></pre>
+
+<h2>What keeps quality up</h2>
+<div class="grid">
+<div class="card"><h3>Prove the tests</h3><p>Break the code behind the key criteria, watch the test fail, restore it. A test that stays green is rewritten.</p></div>
+<div class="card"><h3>Cold review</h3><p>A fresh reviewer with read-only tools, on the session's own model, sees only the brief and the diff.</p></div>
+<div class="card"><h3>Lessons</h3><p>Each blocking review finding becomes a checklist line; one that recurs twice becomes a lint rule or test.</p></div>
+<div class="card"><h3>Check routing</h3><p>Tests are picked from the change through the project's selector, never the full suite until the gate.</p></div>
+</div>
+
+<h2>Session management</h2>
+<p>A new session or subagent costs roughly 65k tokens before it does any work, and long sessions get expensive to continue. So the orchestrator measures its context at each checkpoint (brief approved, PR shipped, gate started), hands off to a fresh session above about 200k tokens or after a compaction, and in Risky work gives each PR's cards to one build session on the cheapest model they allow. Subagents are used only for a read-heavy sweep, the cold review, or large independent work.</p>
+
+<h2>Where instructions live</h2>
+<div class="fig">
+<svg viewBox="0 0 680 330" role="img" aria-labelledby="f2t"><title id="f2t">The plugin holds the generic skill and reviewer; each project repo holds its own gate, selector and tools; each run holds its brief, cards, log and draft PR</title>
+<rect class="grp" x="20" y="10" width="200" height="290" rx="14"/><text class="h" x="120" y="36" text-anchor="middle">This plugin</text>
+<rect class="grp" x="240" y="10" width="200" height="290" rx="14"/><text class="h" x="340" y="36" text-anchor="middle">Each project repo</text>
+<rect class="grp" x="460" y="10" width="200" height="290" rx="14"/><text class="h" x="560" y="36" text-anchor="middle">Each run</text>
+<g class="na"><rect x="35" y="60" width="170" height="56" rx="8"/><text class="h" x="120" y="82" text-anchor="middle">ship skill</text><text class="s" x="120" y="102" text-anchor="middle">lanes, cards, sessions</text></g>
+<g class="na"><rect x="35" y="136" width="170" height="56" rx="8"/><text class="h" x="120" y="158" text-anchor="middle">reviewer</text><text class="s" x="120" y="178" text-anchor="middle">cold, read-only</text></g>
+<g class="na"><rect x="35" y="212" width="170" height="56" rx="8"/><text class="h" x="120" y="234" text-anchor="middle">Lessons</text><text class="s" x="120" y="254" text-anchor="middle">grow from reviews</text></g>
+<g class="nt"><rect x="255" y="60" width="170" height="56" rx="8"/><text class="h" x="340" y="82" text-anchor="middle">AGENTS.md</text><text class="s" x="340" y="102" text-anchor="middle">gate, selector, checks</text></g>
+<g class="nt"><rect x="255" y="136" width="170" height="56" rx="8"/><text class="h" x="340" y="158" text-anchor="middle">Area rules</text><text class="s" x="340" y="178" text-anchor="middle">loaded on demand</text></g>
+<g class="nt"><rect x="255" y="212" width="170" height="56" rx="8"/><text class="h" x="340" y="234" text-anchor="middle">Project tools</text><text class="s" x="340" y="254" text-anchor="middle">selector, facts, tidy</text></g>
+<g class="na"><rect x="475" y="60" width="170" height="56" rx="8"/><text class="h" x="560" y="82" text-anchor="middle">Run folder</text><text class="s" x="560" y="102" text-anchor="middle">brief, cards, log</text></g>
+<g class="na"><rect x="475" y="136" width="170" height="56" rx="8"/><text class="h" x="560" y="158" text-anchor="middle">Build sessions</text><text class="s" x="560" y="178" text-anchor="middle">one per PR</text></g>
+<g class="nt"><rect x="475" y="212" width="170" height="56" rx="8"/><text class="h" x="560" y="234" text-anchor="middle">Draft PR</text><text class="s" x="560" y="254" text-anchor="middle">the lasting record</text></g>
+</svg>
+<div class="legend"><span><span class="sw" style="background:var(--a-bg);border:1px solid var(--a)"></span>Same everywhere</span><span><span class="sw" style="background:var(--t-bg);border:1px solid var(--t)"></span>Owned by the project</span></div>
+</div>
+
+<h2>Install</h2>
+<pre><code>claude plugin marketplace add mmubeenejaz/get-ship-done
+claude plugin install get-ship-done@get-ship-done</code></pre>
+<p>Run it with <code>/get-ship-done:ship &lt;requirement&gt;</code>. Then add a <code>## Get Ship Done</code> section to the project's <code>AGENTS.md</code> naming its gate, test selector, pre-check and PR facts commands; without one, the skill finds the gate in the CI config and offers to add it.</p>
+
+<footer>MIT licensed. <a href="https://github.com/mmubeenejaz/get-ship-done">Source on GitHub</a>.</footer>
+</main>
+</body>
+</html>

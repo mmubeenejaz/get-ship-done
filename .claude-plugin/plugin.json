@@ -1,0 +1,12 @@
+{
+  "name": "get-ship-done",
+  "version": "1.0.0",
+  "description": "Get Ship Done by Mubeen: takes a requirement to a draft PR. Picks a lane by size and risk, writes one brief or a spec and plan with task cards, builds test-first, gates, reviews cold and ships, handing work to fresh sessions at checkpoints.",
+  "author": { "name": "Mubeen Ejaz" },
+  "repository": "https://github.com/mmubeenejaz/get-ship-done",
+  "homepage": "https://mmubeenejaz.github.io/get-ship-done/",
+  "license": "MIT",
+  "keywords": ["engineering", "workflow", "tdd", "code-review", "orchestration"],
+  "skills": ["./skills/ship"],
+  "agents": ["./agents/reviewer.md"]
+}

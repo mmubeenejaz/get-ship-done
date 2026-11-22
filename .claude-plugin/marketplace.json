@@ -1,0 +1,13 @@
+{
+  "name": "get-ship-done",
+  "owner": { "name": "Mubeen Ejaz" },
+  "description": "Get Ship Done by Mubeen, as an installable Claude Code plugin.",
+  "plugins": [
+    {
+      "name": "get-ship-done",
+      "source": "./",
+      "description": "Requirement to draft PR: lanes, task cards, test-first building, a cold review and session management.",
+      "category": "engineering"
+    }
+  ]
+}
