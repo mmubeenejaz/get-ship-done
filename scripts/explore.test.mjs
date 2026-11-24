@@ -4,7 +4,7 @@ import { execFile, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -104,4 +104,46 @@ test('explore refuses a host that is not local unless the guide lists it', async
   const listed = await explore(['--url', 'http://example.com/'], { cwd: exploreProject({ guide: '- explore-hosts: `example.com`\n', withPlaywright: false }).root });
   assert.equal(listed.status, 1);
   assert.match(listed.stderr, /Playwright is not installed.*Fix: .*install/);
+});
+
+const traceOf = (stdout) => stdout.match(/^violation page-error .*\(trace (.+)\)$/m)?.[1];
+
+test('replay reproduces a recorded violation, and shrink keeps only the actions it needs', async () => {
+  const { root } = exploreProject();
+  const found = await run('index.html', [], { cwd: root });
+  const trace = traceOf(found.stdout);
+  assert.ok(trace && existsSync(trace) && existsSync(trace.replace(/\.json$/, '.png')), found.stdout);
+  const recorded = JSON.parse(readFileSync(trace, 'utf8'));
+  assert.equal(recorded.seed, 7);
+  assert.equal(recorded.violation.property, 'page-error');
+
+  const replayed = await explore(['--replay', trace, '--browser', BROWSER], { cwd: root });
+  assert.equal(replayed.status, 1, replayed.stderr);
+  assert.match(replayed.stdout, /^violation page-error \/index\.html: .*planted fault/m);
+  assert.match(replayed.stdout, /^replay: reproduced page-error/m);
+
+  const shrunk = await explore(['--replay', trace, '--browser', BROWSER, '--shrink'], { cwd: root });
+  assert.equal(shrunk.status, 1, shrunk.stderr);
+  const file = shrunk.stdout.match(/^shrink: \d+ to (\d+) actions, trace (.+)$/m);
+  assert.ok(file, shrunk.stdout);
+  const { actions } = JSON.parse(readFileSync(file[2], 'utf8'));
+  assert.deepEqual(actions.map((action) => action.target ?? action.type), ['goto', '#break']);
+});
+
+test('replay of a file that is not a trace exits 1 and names the fix', async () => {
+  const { root } = exploreProject({ files: { 'bad.json': '{}' } });
+  const result = await explore(['--replay', 'bad.json'], { cwd: root });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /bad\.json is not an explore trace\. Fix: /);
+});
+
+test('explore with --slug logs an explore line with HEAD and keeps the findings in the run folder', async () => {
+  const { root, head } = exploreProject();
+  const result = await explore(['--url', `${origin}/faults.html`, '--browser', BROWSER, '--seed', '3', '--steps', '1', '--slug', 's'], { cwd: root });
+  assert.equal(result.status, 1, result.stderr);
+  const runDir = join(result.home, basename(root), 's');
+  assert.match(readFileSync(join(runDir, 'log.md'), 'utf8'), new RegExp(`^\\d{4}-\\d{2}-\\d{2} explore fail steps=1 violations=\\d+ seed=3 head=${head}\\n$`));
+  const findings = JSON.parse(readFileSync(join(runDir, 'explore.json'), 'utf8'));
+  assert.ok(findings.some((finding) => finding.rule === 'console-error' && finding.where === '/faults.html'), JSON.stringify(findings));
+  assert.ok(result.stdout.includes(`(trace ${join(runDir, 'explore')}`), result.stdout);
 });

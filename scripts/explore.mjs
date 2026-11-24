@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -109,125 +109,175 @@ function pageFaults() {
   return { unnamed, blank };
 }
 
-async function runProperties(file, root) {
-  if (!file) return {};
-  return (await import(pathToFileURL(resolve(root, file)).href)).default ?? {};
+async function tools({ root, channel, propertiesFile, fail }) {
+  const playwright = loadPlaywright(root, fail);
+  const properties = propertiesFile ? ((await import(pathToFileURL(resolve(root, propertiesFile)).href)).default ?? {}) : {};
+  let axe = null;
+  try {
+    axe = createRequire(join(root, 'package.json'))('@axe-core/playwright').default;
+  } catch {}
+  return { browser: await launch(playwright, channel, fail), properties, axe };
 }
 
-export async function explore({ url, seed, seconds, steps, start, skip, browser: channel, out, root, propertiesFile, state, fail }) {
-  const playwright = loadPlaywright(root, fail);
-  const properties = await runProperties(propertiesFile, root);
-  const axe = (() => {
-    try {
-      return createRequire(join(root, 'package.json'))('@axe-core/playwright').default;
-    } catch {
-      return null;
-    }
-  })();
-  const base = new URL(url);
-  const routes = start.length > 0 ? start.map((path) => new URL(path, base).href) : [base.href];
-  const random = seeded(seed);
-  const pick = (list) => list[Math.floor(random() * list.length)];
-  const browser = await launch(playwright, channel, fail);
+async function openSession({ browser, properties, axe }, { home, viewport, root, state, skip = [], record }) {
+  const origin = new URL(home).origin;
+  const context = await browser.newContext({ viewport, acceptDownloads: false, ...(state ? { storageState: resolve(root, state) } : {}) });
+  const page = await context.newPage();
+  context.on('page', (opened) => opened.close());
+  const actions = [];
   const violations = [];
   const seen = new Set();
   const checkedPages = new Set();
-  const actions = [];
   let pending = [];
-  try {
-    const context = await browser.newContext({ viewport: DESKTOP, acceptDownloads: false, ...(state ? { storageState: resolve(root, state) } : {}) });
-    const page = await context.newPage();
-    context.on('page', (opened) => opened.close());
-    const where = () => {
-      try {
-        return new URL(page.url()).pathname;
-      } catch {
-        return page.url();
-      }
-    };
-    const sameOrigin = (address) => {
-      try {
-        return new URL(address).origin === base.origin;
-      } catch {
-        return false;
-      }
-    };
-    const found = (property, message) => pending.push({ property, where: where(), message: message.split('\n')[0].slice(0, 200) });
-    page.on('pageerror', (error) => found('page-error', error.message));
-    page.on('console', (message) => message.type() === 'error' && !NETWORK_ECHO.test(message.text()) && found('console-error', message.text()));
-    page.on('response', (response) => response.status() >= 500 && sameOrigin(response.url()) && found('server-error', `${response.status()} from ${new URL(response.url()).pathname}`));
-    page.on('requestfailed', (request) => sameOrigin(request.url()) && !/ERR_ABORTED|NS_BINDING_ABORTED/.test(request.failure()?.errorText ?? '') && found('request-failed', `${request.failure()?.errorText} for ${new URL(request.url()).pathname}`));
-    page.on('dialog', (dialog) => dialog.dismiss().catch(() => {}));
+  const where = () => {
+    try {
+      return new URL(page.url()).pathname;
+    } catch {
+      return page.url();
+    }
+  };
+  const sameOrigin = (address) => {
+    try {
+      return new URL(address).origin === origin;
+    } catch {
+      return false;
+    }
+  };
+  const found = (property, message) => pending.push({ property, where: where(), message: message.split('\n')[0].slice(0, 200) });
+  page.on('pageerror', (error) => found('page-error', error.message));
+  page.on('console', (message) => message.type() === 'error' && !NETWORK_ECHO.test(message.text()) && found('console-error', message.text()));
+  page.on('response', (response) => response.status() >= 500 && sameOrigin(response.url()) && found('server-error', `${response.status()} from ${new URL(response.url()).pathname}`));
+  page.on('requestfailed', (request) => sameOrigin(request.url()) && !/ERR_ABORTED|NS_BINDING_ABORTED/.test(request.failure()?.errorText ?? '') && found('request-failed', `${request.failure()?.errorText} for ${new URL(request.url()).pathname}`));
+  page.on('dialog', (dialog) => dialog.dismiss().catch(() => {}));
 
-    const settle = async () => {
-      await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
-      await page.waitForTimeout(SETTLE_MS);
-      if (!sameOrigin(page.url())) await page.goto(routes[0]).catch(() => {});
-    };
-    const checkPage = async () => {
-      const path = where();
-      if (checkedPages.has(path)) return;
-      checkedPages.add(path);
-      const { unnamed, blank } = await page.evaluate(pageFaults).catch(() => ({ unnamed: [], blank: false }));
-      if (blank) found('blank-page', 'the page shows no text or media');
-      for (const control of unnamed) found('unnamed-control', `no accessible name: ${control}`);
-      await page.setViewportSize(PHONE);
-      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth).catch(() => 0);
-      if (overflow > 1) found('overflow', `${overflow}px wider than a ${PHONE.width}px phone screen`);
-      await page.setViewportSize(DESKTOP);
-      if (axe) {
-        const report = await new axe({ page }).analyze().catch(() => ({ violations: [] }));
-        for (const item of report.violations.filter((violation) => ['serious', 'critical'].includes(violation.impact))) found('axe', `${item.id}: ${item.help}`);
-      }
-    };
-    const record = async () => {
-      await checkPage();
-      for (const [name, property] of Object.entries(properties)) {
-        const message = await Promise.resolve(property(page)).catch((error) => `the property threw: ${error.message}`);
-        if (message) found(name, String(message));
-      }
-      for (const violation of pending) {
-        const key = `${violation.property} ${violation.where} ${violation.message}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const name = `${violations.length + 1}-${violation.property}`;
-        mkdirSync(out, { recursive: true });
-        const trace = join(out, `${name}.json`);
-        writeFileSync(trace, `${JSON.stringify({ url: routes[0], seed, viewport: DESKTOP, actions: [...actions], violation }, null, 2)}\n`);
-        await page.screenshot({ path: join(out, `${name}.png`) }).catch(() => {});
-        violations.push({ ...violation, trace });
-      }
-      pending = [];
-    };
-    const perform = async (action) => {
-      actions.push(action);
-      if (action.type === 'goto') await page.goto(action.url).catch((error) => found('request-failed', error.message));
-      else if (action.type === 'back') await page.goBack().catch(() => {});
-      else {
-        const target = page.locator(action.target).first();
+  const checkPage = async () => {
+    const path = where();
+    if (checkedPages.has(path)) return;
+    checkedPages.add(path);
+    const { unnamed, blank } = await page.evaluate(pageFaults).catch(() => ({ unnamed: [], blank: false }));
+    if (blank) found('blank-page', 'the page shows no text or media');
+    for (const control of unnamed) found('unnamed-control', `no accessible name: ${control}`);
+    await page.setViewportSize(PHONE);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth).catch(() => 0);
+    if (overflow > 1) found('overflow', `${overflow}px wider than a ${PHONE.width}px phone screen`);
+    await page.setViewportSize(viewport);
+    if (axe) {
+      const report = await new axe({ page }).analyze().catch(() => ({ violations: [] }));
+      for (const item of report.violations.filter((violation) => ['serious', 'critical'].includes(violation.impact))) found('axe', `${item.id}: ${item.help}`);
+    }
+  };
+  const perform = async (action) => {
+    actions.push(action);
+    if (action.type === 'goto') await page.goto(action.url).catch((error) => found('request-failed', error.message));
+    else if (action.type === 'back') await page.goBack().catch(() => {});
+    else {
+      const target = page.locator(action.target).first();
+      if ((await target.count().catch(() => 0)) > 0) {
         if (action.type === 'click') await target.click({ timeout: 2000 }).catch(() => {});
         else if (action.type === 'fill') await target.fill(action.value, { timeout: 2000 }).catch(() => {});
         else await target.selectOption(action.value, { timeout: 2000 }).catch(() => {});
       }
-      await settle();
-      await record();
-    };
+    }
+    await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(SETTLE_MS);
+    if (!sameOrigin(page.url())) await page.goto(home).catch(() => {});
+    await checkPage();
+    for (const [name, property] of Object.entries(properties)) {
+      const message = await Promise.resolve()
+        .then(() => property(page))
+        .catch((error) => `the property threw: ${error.message}`);
+      if (message) found(name, String(message));
+    }
+    for (const violation of pending) {
+      const key = `${violation.property} ${violation.where} ${violation.message}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      violations.push(violation);
+      if (record) violation.trace = await record(violation, page, [...actions], violations.length);
+    }
+    pending = [];
+  };
+  const options = () => page.evaluate(candidates, skip).catch(() => []);
+  return { actions, violations, perform, options, close: () => context.close() };
+}
 
-    await perform({ type: 'goto', url: routes[0] });
+async function saveTrace(out, trace, page, number) {
+  mkdirSync(out, { recursive: true });
+  const name = join(out, `${number}-${trace.violation.property}`);
+  writeFileSync(`${name}.json`, `${JSON.stringify(trace, null, 2)}\n`);
+  await page.screenshot({ path: `${name}.png` }).catch(() => {});
+  return `${name}.json`;
+}
+
+export async function explore({ url, seed, seconds, steps, start, skip, browser: channel, out, root, propertiesFile, state, fail }) {
+  const base = new URL(url);
+  const routes = start.length > 0 ? start.map((path) => new URL(path, base).href) : [base.href];
+  const random = seeded(seed);
+  const pick = (list) => list[Math.floor(random() * list.length)];
+  const kit = await tools({ root, channel, propertiesFile, fail });
+  try {
+    const record = (violation, page, actions, number) => saveTrace(out, { url: routes[0], seed, viewport: DESKTOP, actions, violation }, page, number);
+    const session = await openSession(kit, { home: routes[0], viewport: DESKTOP, root, state, skip, record });
+    await session.perform({ type: 'goto', url: routes[0] });
     const deadline = Date.now() + seconds * 1000;
-    while (Date.now() < deadline && actions.length < steps) {
-      const options = await page.evaluate(candidates, skip).catch(() => []);
-      if (actions.length > 1 && random() < BACK_CHANCE) await perform({ type: 'back' });
-      else if (options.length === 0) await perform({ type: 'goto', url: pick(routes) });
+    while (Date.now() < deadline && session.actions.length < steps) {
+      const choices = await session.options();
+      if (session.actions.length > 1 && random() < BACK_CHANCE) await session.perform({ type: 'back' });
+      else if (choices.length === 0) await session.perform({ type: 'goto', url: pick(routes) });
       else {
-        const { options: values, ...chosen } = pick(options);
+        const { options: values, ...chosen } = pick(choices);
         if (chosen.type === 'fill') chosen.value = pick(FILL_VALUES);
         if (chosen.type === 'select') chosen.value = pick(values);
-        await perform(chosen);
+        await session.perform(chosen);
       }
     }
+    return { steps: session.actions.length, violations: session.violations };
   } finally {
-    await browser.close();
+    await kit.browser.close();
   }
-  return { steps: actions.length, violations };
 }
+
+export function readTrace(file, fail) {
+  try {
+    const trace = JSON.parse(readFileSync(file, 'utf8'));
+    if (typeof trace.url === 'string' && Array.isArray(trace.actions) && trace.violation?.property) return trace;
+  } catch {}
+  return fail(`gsd explore: ${file} is not an explore trace. Fix: pass a .json trace that gsd explore wrote under its --out folder.`);
+}
+
+export async function replay({ file, trace, shrink, browser: channel, root, propertiesFile, state, fail }) {
+  const { property } = trace.violation;
+  const kit = await tools({ root, channel, propertiesFile, fail });
+  const run = async (actions) => {
+    const session = await openSession(kit, { home: trace.url, viewport: trace.viewport ?? DESKTOP, root, state });
+    try {
+      for (const action of actions) {
+        await session.perform(action);
+        if (session.violations.some((violation) => violation.property === property)) break;
+      }
+      return session.violations;
+    } finally {
+      await session.close();
+    }
+  };
+  const reproduces = async (actions) => (await run(actions)).some((violation) => violation.property === property);
+  try {
+    const violations = await run(trace.actions);
+    const reproduced = violations.some((violation) => violation.property === property);
+    if (!shrink || !reproduced) return { reproduced, violations };
+    let actions = trace.actions;
+    for (let size = Math.max(1, Math.floor(actions.length / 2)); size >= 1; size = Math.floor(size / 2)) {
+      for (let at = 0; at < actions.length; ) {
+        const candidate = [...actions.slice(0, at), ...actions.slice(at + size)];
+        if (candidate.length > 0 && (await reproduces(candidate))) actions = candidate;
+        else at += size;
+      }
+    }
+    const shrunk = `${file.replace(/\.json$/i, '')}-shrunk.json`;
+    writeFileSync(shrunk, `${JSON.stringify({ ...trace, actions }, null, 2)}\n`);
+    return { reproduced, violations, shrunk: { file: shrunk, from: trace.actions.length, to: actions.length } };
+  } finally {
+    await kit.browser.close();
+  }
+}
+

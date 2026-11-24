@@ -58,6 +58,7 @@ export const PHASES = {
   handoff: {},
   outcome: { result: oneOf(['merged', 'closed', 'reverted']), keys: { pr: DIGITS } },
   escape: { result: oneOf(ESCAPE_LAYERS), keys: { pr: DIGITS, check: KEBAB } },
+  explore: { result: oneOf(PASS_FAIL), keys: { steps: DIGITS, violations: DIGITS, seed: DIGITS, head: ANY } },
   note: { freeText: true },
   next: { freeText: true },
 };
@@ -106,8 +107,11 @@ function runEntries(dir) {
   return readFileSync(file, 'utf8').split(/\r?\n/).map((line) => parseLine(line.split(' '))).filter(Boolean);
 }
 
+const SLUG = /^[a-z0-9][a-z0-9-]*$/;
+const EXPLORE_FINDINGS = 'explore.json';
+
 function log([slug, phase, ...rest]) {
-  if (!slug || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) fail('gsd log: the first argument is the run slug in kebab-case. Fix: gsd log <slug> <phase> <result> [key=value ...].');
+  if (!slug || !SLUG.test(slug)) fail('gsd log: the first argument is the run slug in kebab-case. Fix: gsd log <slug> <phase> <result> [key=value ...].');
   const { given } = readEntry(phase, rest);
   const dir = runDir(slug);
   if (phase === 'ship') verifyShip(slug, dir, given);
@@ -954,32 +958,49 @@ const positiveNumber = (value, flag) => {
   return Number(value);
 };
 
+const violationLine = ({ property, where, message, trace }) => `violation ${property} ${where}: ${message}${trace ? ` (trace ${trace})` : ''}`;
+
 async function exploreCommand(args) {
-  const { flags } = parseFlags(args, ['url', 'time', 'seed', 'start', 'browser', 'out', 'steps']);
+  const shrink = args.includes('--shrink');
+  const { flags } = parseFlags(args.filter((arg) => arg !== '--shrink'), ['url', 'time', 'seed', 'start', 'browser', 'out', 'steps', 'replay', 'slug']);
+  if (flags.slug && !SLUG.test(flags.slug)) fail('gsd explore: --slug takes the run slug in kebab-case.');
+  if (shrink && !flags.replay) fail('gsd explore: --shrink works on a recorded trace. Fix: gsd explore --replay <trace.json> --shrink.');
   const root = repoRoot();
   const settings = readConfig(root)?.values ?? {};
+  const { checkHost, explore, readTrace, replay } = await import('./explore.mjs');
+  const shared = { browser: flags.browser ?? settings['explore-browser'], root, propertiesFile: settings['explore-properties'], state: settings['explore-state'], fail };
+  if (flags.replay) {
+    const trace = readTrace(resolve(flags.replay), fail);
+    checkHost(trace.url, settings['explore-hosts'] ?? [], fail);
+    const { reproduced, violations, shrunk } = await replay({ ...shared, file: resolve(flags.replay), trace, shrink });
+    const verdict = reproduced
+      ? `replay: reproduced ${trace.violation.property} from ${counted(trace.actions.length, 'action')}`
+      : `replay: did not reproduce ${trace.violation.property}; timing or data may differ from the recorded run, so explore again with seed ${trace.seed}`;
+    const shrinkLine = shrunk ? [`shrink: ${shrunk.from} to ${shrunk.to} actions, trace ${shrunk.file}`] : [];
+    process.stdout.write([...violations.map(violationLine), verdict, ...shrinkLine].join('\n') + '\n');
+    return violations.length > 0 ? 1 : 0;
+  }
   const url = flags.url ?? settings.explore;
   if (!url) fail('gsd explore: no URL to explore. Fix: pass --url <local app url>, or set "- explore: <url>" in the guide\'s Get Ship Done section.');
-  const { checkHost, explore } = await import('./explore.mjs');
   checkHost(url, settings['explore-hosts'] ?? [], fail);
   const seed = flags.seed === undefined ? Math.floor(Math.random() * 1e9) : Number(flags.seed);
-  const out = resolve(flags.out ?? join(tmpdir(), `gsd-explore-${seed}`));
+  const out = resolve(flags.out ?? (flags.slug ? join(runDir(flags.slug), 'explore') : join(tmpdir(), `gsd-explore-${seed}`)));
   const { steps, violations } = await explore({
+    ...shared,
     url,
     seed,
     seconds: positiveNumber(flags.time, 'time') ?? EXPLORE_SECONDS,
     steps: positiveNumber(flags.steps, 'steps') ?? Infinity,
     start: flags.start?.split(',').map((path) => path.trim()).filter(Boolean) ?? [],
     skip: settings['explore-skip'] ?? [],
-    browser: flags.browser ?? settings['explore-browser'],
     out,
-    root,
-    propertiesFile: settings['explore-properties'],
-    state: settings['explore-state'],
-    fail,
   });
-  const lines = violations.map(({ property, where, message, trace }) => `violation ${property} ${where}: ${message} (trace ${trace})`);
-  process.stdout.write([...capped(lines, REVIEW_LIMIT), `explore: ${counted(steps, 'step')}, ${counted(violations.length, 'violation')}, seed ${seed}, out ${out}`].join('\n') + '\n');
+  process.stdout.write([...capped(violations.map(violationLine), REVIEW_LIMIT), `explore: ${counted(steps, 'step')}, ${counted(violations.length, 'violation')}, seed ${seed}, out ${out}`].join('\n') + '\n');
+  if (flags.slug) {
+    mkdirSync(runDir(flags.slug), { recursive: true });
+    writeFileSync(join(runDir(flags.slug), EXPLORE_FINDINGS), `${JSON.stringify(violations.map(({ where, property, message }) => ({ where, rule: property, text: message })), null, 2)}\n`);
+    log([flags.slug, 'explore', violations.length > 0 ? 'fail' : 'pass', `steps=${steps}`, `violations=${violations.length}`, `seed=${seed}`, `head=${git(['rev-parse', 'HEAD']).trim()}`]);
+  }
   return violations.length > 0 ? 1 : 0;
 }
 
