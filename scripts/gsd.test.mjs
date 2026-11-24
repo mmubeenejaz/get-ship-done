@@ -365,6 +365,16 @@ test('features lists each touched feature with its specs and the unmapped source
   ]);
 });
 
+test('features omits a feature whose paths the branch does not touch', () => {
+  const cwd = mappedBranch();
+  git(cwd, 'switch', '-q', '-c', 'elsewhere', 'main');
+  write(cwd, 'src/other/x.js', 'export const x = 3;\n');
+  git(cwd, 'add', '-A');
+  git(cwd, 'commit', '-q', '-m', 'elsewhere');
+  const result = gsd(['features', '--base', 'main'], { cwd });
+  assert.deepEqual(result.stdout.trim().split('\n'), ['unmapped src/other/x.js', 'features: 0 touched, 1 unmapped']);
+});
+
 test('features reads the map folder named by the guide', () => {
   const cwd = mappedBranch({ mapDir: 'docs/map', guide: '## Get Ship Done\n\n- feature-map: `docs/map`\n' });
   assert.match(gsd(['features', '--base', 'main'], { cwd }).stdout, /^feature docs\/map\/search\.md$/m);
