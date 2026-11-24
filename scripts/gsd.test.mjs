@@ -306,6 +306,67 @@ for (const [name, changes, options, expected] of REVIEW_CASES) {
   });
 }
 
+const SLOP_CASES = [
+  ['ui-gradient', 'src/Hero.tsx', '<div className="bg-gradient-to-r from-purple-500 to-blue-500" />'],
+  ['ui-gradient', 'src/app.css', '.hero { background: linear-gradient(90deg, #7c3aed, #2563eb); }'],
+  ['ui-gradient-text', 'src/Hero.tsx', '<h1 className="bg-clip-text text-transparent">Plans</h1>'],
+  ['ui-glass-glow', 'src/Card.tsx', '<div className="backdrop-blur-md" />'],
+  ['ui-glass-glow', 'src/Card.vue', '<div class="shadow-lg shadow-purple-500/50" />'],
+  ['ui-transition-all', 'src/app.css', '.card { transition: all 0.2s; }'],
+  ['ui-looping-motion', 'src/Badge.tsx', '<span className="animate-pulse">Live</span>'],
+  ['ui-hover-lift', 'src/Card.tsx', '<div className="hover:-translate-y-1" />'],
+  ['ui-emoji', 'src/Badge.svelte', '<span>New ✨</span>'],
+  ['ui-heavy-weight', 'src/Hero.tsx', '<h1 className="font-extrabold">Plans</h1>'],
+  ['ui-tracked-caps', 'src/Label.tsx', '<p className="text-xs uppercase tracking-widest">Plans</p>'],
+  ['ui-one-off-value', 'src/Card.tsx', '<div className="mt-[13px]" />'],
+  ['ui-one-off-value', 'src/Card.jsx', '<div className="bg-[#7c3aed]" />'],
+  ['ui-focus-removed', 'src/Button.tsx', '<button className="outline-none">Save</button>'],
+  ['ui-hype-copy', 'src/index.html', '<p>A seamless way to plan your week</p>'],
+  ['ui-fake-stat', 'src/Hero.tsx', '<p>Trusted by 10K+ teams</p>'],
+  ['ui-default-font', 'src/app.scss', 'body { font-family: Inter, sans-serif; }'],
+  ['ui-default-font', 'src/layout.tsx', 'const sans = Inter({ subsets: ["latin"] });'],
+];
+
+for (const [rule, path, line] of SLOP_CASES) {
+  test(`diff-check lists ${rule} in ${path} for review: ${line}`, () => {
+    const result = diffCheck(branch({ [path]: `${line}\n` }));
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, new RegExp(`^review\\s+${path.replace(/\./g, '\\.')}:1 ${rule}: .+\\. Fix: `, 'm'));
+  });
+}
+
+test('ui-audit lists slop in tracked UI files with a tally', () => {
+  const cwd = project({
+    'src/App.tsx': '<div className="transition-all">\n  <span>Ready ✨</span>\n</div>\n',
+    'src/notes.md': 'transition-all\n',
+    'src/server.js': 'export const css = "transition-all";\n',
+  });
+  write(cwd, 'src/Scratch.tsx', '<div className="backdrop-blur" />\n');
+  for (const args of [['src'], []]) {
+    const result = gsd(['ui-audit', ...args], { cwd });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /^review src\/App\.tsx:1 ui-transition-all: .+\. Fix: /m);
+    assert.match(result.stdout, /^review src\/App\.tsx:2 ui-emoji: /m);
+    assert.doesNotMatch(result.stdout, /Scratch|notes|server/);
+    assert.match(result.stdout, /^ui-audit rules: ui-emoji 1, ui-transition-all 1$/m);
+    assert.match(result.stdout, /^ui-audit: 1 files, 2 findings$/m);
+  }
+});
+
+test('ui-audit shows at most 50 findings and counts the rest', () => {
+  const cwd = project({ 'src/app.css': '.a { transition: all 1s; }\n'.repeat(60) });
+  const result = gsd(['ui-audit'], { cwd });
+  assert.equal(result.stdout.match(/^review /gm).length, 51);
+  assert.match(result.stdout, /^review \(10 more not shown\)$/m);
+  assert.match(result.stdout, /^ui-audit: 1 files, 60 findings$/m);
+});
+
+test('ui-audit without a tracked UI file exits 1 and names the fix', () => {
+  const result = gsd(['ui-audit', 'src'], { cwd: project() });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /no tracked UI file under src\. Fix: /);
+});
+
 const CLEAN_CASES = [
   ['a plain code change', { 'src/a.js': 'export const a = 2;\n' }, {}],
   ['a Markdown file inside the docs globs', { 'docs/modules/x.md': '# X\n' }, { guide: DOCS_GUIDE }],
@@ -313,6 +374,9 @@ const CLEAN_CASES = [
   ['a suppression word in prose', { 'docs/guide.md': `${LONG_DOC}Avoid ${hiddenFromOwnDiffCheck('eslint', '-disable')} where you can.\n` }, {}],
   ['a renamed test file', {}, { rename: ['src/a.test.js', 'src/b.test.js'] }],
   ['a URL in code', { 'src/a.js': 'export const a = "https://example.com/x";\n' }, {}],
+  ['slop words in Markdown', { 'docs/guide.md': `${LONG_DOC}Avoid bg-clip-text, transition-all and seamless copy.\n` }, {}],
+  ['slop words in a script', { 'src/a.js': 'export const banned = ["transition-all", "backdrop-blur", "10K+"];\n' }, {}],
+  ['plain UI with tokens', { 'src/Footer.tsx': '<footer className="bg-primary text-sm font-bold uppercase">© 2026 <span className="animate-spin" /><a className="outline-none focus-visible:ring-2">Home</a></footer>\n' }, {}],
 ];
 
 for (const [name, changes, options] of CLEAN_CASES) {
@@ -519,6 +583,13 @@ test('guard applies only to the session that ran gsd', () => {
 test('guard marks the session and checks the rest of the same command', () => {
   const result = guard(`${GSD_CALL} && gh pr merge 5`, { home: freshDir('home'), cwd: project() });
   assert.equal(result.decision.permissionDecision, 'ask');
+});
+
+test('guard marks the session for every gsd command a run uses', () => {
+  for (const name of COMMAND_NAMES.filter((command) => command !== 'guard')) {
+    const result = guard(`node "/plugins/get-ship-done/scripts/gsd.mjs" ${name} && gh pr merge 5`, { home: freshDir('home'), cwd: project() });
+    assert.equal(result.decision?.permissionDecision, 'ask', `gsd ${name} does not mark the session`);
+  }
 });
 
 const ASK_COMMANDS = [
