@@ -257,7 +257,90 @@ function lint(args) {
   return 1;
 }
 
-const COMMANDS = { log, config, lint };
+const TEST_FILE = /(^|\/)(__tests__|tests?|e2e|specs?)\/|\.(test|spec)\.[cm]?[jt]sx?$|_test\.(go|py|rb)$|(^|\/)test_[^/]+\.py$|Tests?\.(cs|java|kt)$/;
+const SKIPPED_TEST = /\b(?:it|test|describe|context)\.(?:skip|todo|fixme)\b|\bx(?:it|describe|test)\s*\(|@pytest\.mark\.skip|@unittest\.skip|\bt\.Skip(?:Now)?\(|@Ignore\b|@Disabled\b/;
+const FOCUSED_TEST = /\b(?:it|test|describe|context)\.only\b|\bf(?:it|describe)\s*\(/;
+const SUPPRESSION = /eslint-disable|@ts-(?:ignore|expect-error|nocheck)|\btype:\s*ignore\b|\bnoqa\b|\bnolint\b/;
+const WORKAROUND = /\b(?:TODO|FIXME|HACK|XXX|workaround|temporary|temporarily|for now|do not remove|don't remove)\b/i;
+const PLANNING_FILE = /^(?:brief|spec|plan|notes?|todo|scratch|handover|handoff|summary)(?:[-_.][^/]*)?\.(?:md|txt)$/i;
+const STRAY_FILE = /\.(?:log|tmp|bak|orig|rej)$/i;
+const KEPT_DOC = /^(?:README|CHANGELOG)\.md$/i;
+const SLASH_COMMENTS = ['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'go', 'rs', 'java', 'cs', 'kt', 'swift', 'php', 'c', 'h', 'cpp', 'css', 'scss'];
+const HASH_COMMENTS = ['py', 'rb', 'sh', 'bash', 'ps1', 'yml', 'yaml', 'toml'];
+const REVIEW_LIMIT = 30;
+const REWRITE_MIN_LINES = 40;
+
+function commentText(path, line) {
+  const extension = path.split('.').pop().toLowerCase();
+  if (SLASH_COMMENTS.includes(extension)) return line.match(/^\s*(?:\/\/|\/\*|\*(?!\/)|\{\/\*)(.*)$/)?.[1] ?? line.match(/\s\/\/(.*)$/)?.[1] ?? null;
+  if (HASH_COMMENTS.includes(extension)) return line.match(/^\s*#(?!!)(.*)$/)?.[1] ?? line.match(/\s#\s(.*)$/)?.[1] ?? null;
+  if (extension === 'sql') return line.match(/^\s*--(.*)$/)?.[1] ?? null;
+  return null;
+}
+
+function addedLines(range, cwd) {
+  const added = [];
+  let path = null;
+  let lineNumber = 0;
+  for (const line of (git(['diff', '--unified=0', '--no-color', '-M', range], cwd) ?? '').split('\n')) {
+    if (line.startsWith('+++ ')) path = line.startsWith('+++ b/') ? line.slice(6) : null;
+    else if (line.startsWith('@@')) lineNumber = Number(line.match(/\+(\d+)/)[1]);
+    else if (line.startsWith('+') && path) added.push({ path, line: lineNumber++, text: line.slice(1) });
+  }
+  return added;
+}
+
+function diffCheck(args) {
+  const { flags } = parseFlags(args, ['base']);
+  const base = flags.base;
+  if (!base || git(['rev-parse', '--verify', '--quiet', `${base}^{commit}`]) === null) fail(`gsd diff-check: "${base ?? ''}" is not a known base ref. Fix: git fetch, then pass --base origin/<base branch>.`);
+  const range = `${base}...HEAD`;
+  const settings = readConfig(repoRoot())?.values ?? {};
+  const isTest = (path) => TEST_FILE.test(path) || matchesAny(path, settings.tests ?? []);
+  const blocking = [];
+  const review = [];
+  const block = (where, rule, problem, fix) => blocking.push(`block  ${where} ${rule}: ${problem}. Fix: ${fix}.`);
+  const note = (where, rule, problem, fix) => review.push(`review ${where} ${rule}: ${problem}. Fix: ${fix}.`);
+
+  for (const entry of (git(['diff', '--name-status', '-M', range]) ?? '').split('\n').filter(Boolean)) {
+    const [status, ...paths] = entry.split('\t');
+    const path = paths[paths.length - 1];
+    const name = basename(path);
+    if (status === 'D' && isTest(path)) block(path, 'test-deleted', 'a test file is deleted', 'restore it; if the behavior it covers is gone on purpose, say so in the PR and ask the user');
+    if (status !== 'A') continue;
+    if (PLANNING_FILE.test(name)) block(path, 'planning-artifact', 'a planning or notes file is added to the repo', 'keep it in the run folder and the PR description; a lasting doc is named for its subject');
+    else if (STRAY_FILE.test(name)) block(path, 'stray-file', 'a log, backup or scratch file is added', 'delete it from the branch, and add its pattern to .gitignore if a tool writes it');
+    else if (/\.md$/i.test(name) && !KEPT_DOC.test(name)) {
+      if (!settings.docs) note(path, 'doc-added', 'a new Markdown file', 'keep it only if it is a living doc; otherwise edit the section of an existing doc');
+      else if (!matchesAny(path, settings.docs)) block(path, 'doc-outside-docs', `a new Markdown file outside the guide's docs globs (${settings.docs.join(', ')})`, 'edit the section of the living doc it belongs to, or move it under those globs');
+    }
+  }
+
+  const mergeBase = git(['merge-base', base, 'HEAD'])?.trim();
+  for (const entry of (git(['diff', '--numstat', '--no-renames', range]) ?? '').split('\n').filter(Boolean)) {
+    const [, removed, path] = entry.split('\t');
+    if (!/\.md$/i.test(path) || removed === '-') continue;
+    const before = git(['show', `${mergeBase}:${path}`])?.split('\n').length ?? 0;
+    if (before >= REWRITE_MIN_LINES && Number(removed) * 2 >= before) note(path, 'doc-rewritten', `${removed} of about ${before} lines are replaced`, 'edit only the sections this change makes untrue');
+  }
+
+  for (const { path, line, text } of addedLines(range)) {
+    const where = `${path}:${line}`;
+    if (isTest(path) && SKIPPED_TEST.test(text)) block(where, 'test-skipped', 'a test is skipped', 'make it pass; if the test itself is wrong, say why in the PR and ask the user');
+    if (isTest(path) && FOCUSED_TEST.test(text)) block(where, 'test-focused', 'a focused test stops the rest of the file from running', 'remove the focus before committing');
+    const comment = commentText(path, text);
+    if (comment === null) continue;
+    if (SUPPRESSION.test(comment)) block(where, 'suppression-added', 'a lint or type check is switched off', 'fix what the rule reports; if the rule is wrong here, ask the user');
+    else if (WORKAROUND.test(comment)) block(where, 'workaround-comment', 'a comment defers or defends a workaround', 'fix the cause now, or stop and report it; encode a "do not remove" claim as a type, test or lint');
+    else note(where, 'comment-added', 'a new comment', 'keep it only for a license header, a public API doc, behavior forced by an external system, or a link for a constraint code cannot express; otherwise rename or restructure so the code says it');
+  }
+
+  const shown = review.length > REVIEW_LIMIT ? [...review.slice(0, REVIEW_LIMIT), `review (${review.length - REVIEW_LIMIT} more not shown)`] : review;
+  process.stdout.write([...blocking, ...shown, `diff-check: ${blocking.length} blocking, ${review.length} review`].join('\n') + '\n');
+  return blocking.length > 0 ? 1 : 0;
+}
+
+const COMMANDS = { log, config, lint, 'diff-check': diffCheck };
 
 function main(argv) {
   const [name, ...args] = argv;

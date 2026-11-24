@@ -225,3 +225,91 @@ test('lint lets a later card modify or copy a file an earlier card creates', () 
   const result = lint(`${BRIEF}\n${second}\n`);
   assert.equal(result.status, 0, result.stdout);
 });
+
+const hiddenFromOwnDiffCheck = (...parts) => parts.join('');
+const SLASHES = hiddenFromOwnDiffCheck('/', '/');
+const HASH = String.fromCharCode(35);
+const SKIP_CALL = `${hiddenFromOwnDiffCheck('it', '.', 'skip')}("a", () => {});\n`;
+const FOCUS_CALL = `${hiddenFromOwnDiffCheck('describe', '.', 'only')}("a", () => {});\n`;
+const SUPPRESSION = `${SLASHES} ${hiddenFromOwnDiffCheck('eslint', '-disable-next-line')} no-undef\nexport const a = b;\n`;
+const PY_SUPPRESSION = `x = f()  ${HASH} ${hiddenFromOwnDiffCheck('type:', ' ', 'ignore')}\n`;
+const LATER = hiddenFromOwnDiffCheck('TO', 'DO');
+const LONG_DOC = Array.from({ length: 40 }, (_, i) => `Line ${i + 1} of the guide.`).join('\n') + '\n';
+const DOCS_GUIDE = '## Get Ship Done\n\n- docs: `docs/modules/**`\n';
+
+function branch(changes, { guide, remove = [], rename } = {}) {
+  const cwd = project({
+    'src/a.js': 'export const a = 1;\n',
+    'src/a.test.js': 'test("a", () => {});\n',
+    'docs/guide.md': LONG_DOC,
+    ...(guide ? { 'AGENTS.md': guide } : {}),
+  });
+  git(cwd, 'switch', '-q', '-c', 'work');
+  for (const [path, content] of Object.entries(changes)) write(cwd, path, content);
+  for (const path of remove) rmSync(join(cwd, path));
+  if (rename) git(cwd, 'mv', rename[0], rename[1]);
+  git(cwd, 'add', '-A');
+  git(cwd, 'commit', '-q', '--allow-empty', '-m', 'work');
+  return cwd;
+}
+
+const diffCheck = (cwd) => gsd(['diff-check', '--base', 'main'], { cwd });
+
+const BLOCKING_CASES = [
+  ['a skipped test', { 'src/a.test.js': SKIP_CALL }, {}, /^block\s+src\/a\.test\.js:1 test-skipped: /m],
+  ['a focused test', { 'src/a.test.js': FOCUS_CALL }, {}, /^block\s+src\/a\.test\.js:1 test-focused: /m],
+  ['a deleted test file', {}, { remove: ['src/a.test.js'] }, /^block\s+src\/a\.test\.js test-deleted: /m],
+  ['a lint suppression', { 'src/a.js': SUPPRESSION }, {}, /^block\s+src\/a\.js:1 suppression-added: /m],
+  ['a trailing type suppression', { 'tool.py': PY_SUPPRESSION }, {}, /^block\s+tool\.py:1 suppression-added: /m],
+  ['a workaround comment', { 'src/a.js': `${SLASHES} ${LATER} tidy this later\nexport const a = 1;\n` }, {}, /^block\s+src\/a\.js:1 workaround-comment: /m],
+  ['a "for now" comment', { 'src/a.js': `export const a = 2; ${SLASHES} fine for now\n` }, {}, /^block\s+src\/a\.js:1 workaround-comment: /m],
+  ['a planning artifact', { 'docs/PLAN.md': '# Plan\n' }, {}, /^block\s+docs\/PLAN\.md planning-artifact: /m],
+  ['a stray log file', { 'debug.log': 'x\n' }, {}, /^block\s+debug\.log stray-file: /m],
+  ['a Markdown file outside the docs globs', { 'docs/feature-x.md': '# X\n' }, { guide: DOCS_GUIDE }, /^block\s+docs\/feature-x\.md doc-outside-docs: /m],
+];
+
+for (const [name, changes, options, expected] of BLOCKING_CASES) {
+  test(`diff-check blocks ${name} and names the fix`, () => {
+    const result = diffCheck(branch(changes, options));
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, expected);
+    assert.match(result.stdout, / Fix: /);
+  });
+}
+
+const REVIEW_CASES = [
+  ['a plain why-comment', { 'src/a.js': `${SLASHES} The vendor API returns seconds, not milliseconds.\nexport const a = 1;\n` }, {}, /^review\s+src\/a\.js:1 comment-added: /m],
+  ['a new Markdown file when the guide has no docs key', { 'docs/feature-x.md': '# X\n' }, {}, /^review\s+docs\/feature-x\.md doc-added: /m],
+  ['a rewritten Markdown file', { 'docs/guide.md': 'All new.\n' }, {}, /^review\s+docs\/guide\.md doc-rewritten: /m],
+];
+
+for (const [name, changes, options, expected] of REVIEW_CASES) {
+  test(`diff-check lists ${name} for review without failing`, () => {
+    const result = diffCheck(branch(changes, options));
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, expected);
+  });
+}
+
+const CLEAN_CASES = [
+  ['a plain code change', { 'src/a.js': 'export const a = 2;\n' }, {}],
+  ['a Markdown file inside the docs globs', { 'docs/modules/x.md': '# X\n' }, { guide: DOCS_GUIDE }],
+  ['a new README', { 'src/README.md': '# Src\n' }, { guide: DOCS_GUIDE }],
+  ['a suppression word in prose', { 'docs/guide.md': `${LONG_DOC}Avoid ${hiddenFromOwnDiffCheck('eslint', '-disable')} where you can.\n` }, {}],
+  ['a renamed test file', {}, { rename: ['src/a.test.js', 'src/b.test.js'] }],
+  ['a URL in code', { 'src/a.js': 'export const a = "https://example.com/x";\n' }, {}],
+];
+
+for (const [name, changes, options] of CLEAN_CASES) {
+  test(`diff-check passes ${name}`, () => {
+    const result = diffCheck(branch(changes, options));
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /^diff-check: 0 blocking, 0 review$/m);
+  });
+}
+
+test('diff-check rejects an unknown base ref and names the fix', () => {
+  const result = gsd(['diff-check', '--base', 'nope'], { cwd: branch({}) });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /nope.* Fix: /);
+});
