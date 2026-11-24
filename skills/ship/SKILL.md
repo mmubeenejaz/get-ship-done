@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Get Ship Done by Mubeen: run a requirement (intake and lane, brief or spec and plan, build test-first, gate and review, ship) as a draft PR. Picks a lane by size and risk, so a small change gets a direct edit, a standard change one approved brief, and a risky or large change a separate spec and plan plus one cold review on the session's model (also for Standard work in a session below Opus). Use whenever the user brings a new requirement for code in a git repo (a feature, a behavior change, a bug fix), or asks for Get Ship Done or the factory. Not for questions, reviews or investigations.
+description: Get Ship Done by Mubeen: run a requirement (intake and lane, brief or spec and plan, build test-first, gate and review, ship) as a draft PR. Picks a lane by size and risk, so a small change gets a direct edit, a standard change one approved brief, and a risky or large change a separate spec and plan plus one cold review on the session's model (also for Standard work in a session below Opus). Use whenever the user brings a new requirement for code in a git repo (a feature, a behavior change, a bug fix, an unslop of existing screens), or asks for Get Ship Done or the factory. Not for questions, reviews or investigations.
 argument-hint: <requirement text, issue link or file path>
 ---
 
@@ -23,6 +23,7 @@ Requirement: $ARGUMENTS
 | `gsd diff-check --base <ref>` | test integrity, escape hatches and doc clutter on the branch diff |
 | `gsd features --base <ref>` | the features the branch touches, with their specs, from the project's feature map |
 | `gsd stats` | first-pass, gate and outcome rates for this repo |
+| `gsd ui-audit [path ...]` | generic UI tokens in the tracked screens under a folder, with a tally per rule: the audit before an unslop |
 
 The plugin's hook treats a session as a run from its first `gsd` command. From then on a merge, a ready mark or a push to the base branch prompts the user, and `--no-verify` is denied.
 
@@ -124,14 +125,14 @@ Requirement: <link or quoted text>   Base: <branch @ sha>   Lane: Standard
 ## Decisions             (each with its source)
 ## Approach              (3 to 6 lines; rejected alternative and why)
 ## Changes               (paths and what changes; size in LOC)
-## Screens                (UI changes only: per screen, the stock components or blocks used, layout, states; a reference screenshot where one exists. Never "make it better")
+## Screens                (UI changes only, after loading [references/ui-design.md](references/ui-design.md): the five-line direction; for existing screens the audit and triage; per screen the stock components or blocks used, layout, states; a reference screenshot where one exists. Never "make it better")
 ## Test seams and checks (seam -> criteria; manual checks with id; the routed checks)
 ## Data and contracts    (or "None")
 ## Docs                  (sections this makes untrue, or "none: <reason>")
 ## Tasks                 (task cards, in build order)
 ```
 
-4. Risky: write `spec.md` (Problem, Outcome, Acceptance criteria, Scope, Constraints, Decisions, Risks). **Gate:** Approve spec. Then go to Design.
+4. Risky: write `spec.md` (Problem, Outcome, Acceptance criteria, Scope, Constraints, Decisions, Risks, and Screens as in the brief for a UI change). **Gate:** Approve spec. Then go to Design.
 
 ## 2. Design (Risky lane only)
 
@@ -148,7 +149,7 @@ When the work splits into several PRs, run phases 3 to 5 once per PR, each branc
 1. Branch from the latest base (`git fetch`, branch from `origin/<base>` or the previous PR's head). If another session or someone else's uncommitted work is in the checkout, use a git worktree.
 2. Load `mattpocock-skills:tdd` for behavior changes. The approved cards are not asked again. Direct lane: a test only where behavior changes.
 3. Per card, in order: red (the card's test, failing for the right reason), green (the smallest code that passes), refactor while green. Run its `Done when` command and the routed checks. Format with the project's formatter. Commit each card with what and why, and log its line. A card's `Stop if` met, or a card that cannot be done as written, stops the build: report it; the orchestrator fixes the card, never the builder.
-4. Apply the Docs items in the same change, as section edits. Where the project has a feature map, prove the change in the running app: for each feature `gsd features` lists, follow its "Driving it" steps with the map's recipe (server and API changes included, not only UI), log where the evidence is with `gsd log <slug> note`, and fix any map entry this change makes untrue. Run the manual checks (load `run` to launch the app) and record each result with `gsd log <slug> note`. A UI change ends with a screenshot of each changed screen, compared against the brief's Screens section.
+4. Apply the Docs items in the same change, as section edits. Where the project has a feature map, prove the change in the running app: for each feature `gsd features` lists, follow its "Driving it" steps with the map's recipe (server and API changes included, not only UI), log where the evidence is with `gsd log <slug> note`, and fix any map entry this change makes untrue. Run the manual checks (load `run` to launch the app) and record each result with `gsd log <slug> note`. A UI change ends with the finish check in [references/ui-design.md](references/ui-design.md): a screenshot of each changed screen, compared against the direction and the Screens section.
 5. Stop and ask when the brief or plan proves wrong, the work needs something not approved, or a failure resists two attempts. Do not improvise architecture.
 
 Build rules: fix root causes; never hide or swallow errors, leave stubs or placeholders, or skip, weaken or delete a valid test; keep server-side authorization, tenant isolation and data boundaries; validate external input at boundaries without excess defense; names follow the domain; no new comments (see Comments); never edit an applied migration; no secrets or real personal data in code, logs or fixtures; no AI attribution; no em dashes in written text; stop every server or watcher you start.
@@ -179,6 +180,7 @@ Comments: write none by default. A comment stays only when it is a license heade
 | No skipped, focused or deleted test | `gsd diff-check` |
 | No new suppression or workaround comment | `gsd diff-check` |
 | No planning artifact, stray file or Markdown outside the living docs | `gsd diff-check` |
+| A generic UI token on a new line is fixed or justified against the direction | `gsd diff-check` (review) |
 | Typecheck, lint and tests pass on HEAD | the project's gate |
 | Approval gates, the lane, weakened assertions, authorization and tenant isolation, scope, secrets and real data, deploys and hosted changes | judgment: you, the self-review and the cold review |
 
