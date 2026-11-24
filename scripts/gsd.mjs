@@ -122,7 +122,7 @@ function verifyShip(slug, given) {
   const [ref, sha] = intake.given.base.split('@');
   const base = [`origin/${ref}`, ref, sha].find((candidate) => candidate && isCommit(candidate));
   if (!base) fail(`gsd log: ship refused, the intake base "${intake.given.base}" is not a commit git knows. Fix: git fetch, or log a new intake line whose base=<branch>@<sha> resolves.`);
-  const problems = diffProblems(slug, base, given, entries);
+  const problems = [...diffProblems(slug, base, given, entries), ...githubProblems(given)];
   if (problems.length > 0) fail(['gsd log: ship refused, nothing was written. Fix each problem, then log ship again:', ...capped(problems, REVIEW_LIMIT)].join('\n'));
 }
 
@@ -140,6 +140,45 @@ function diffProblems(slug, base, given, entries) {
   }
   for (const finding of review.filter((item) => !named(kept, item))) {
     problems.push(`${findingLine('review', finding)}\n  Or keep it: gsd log ${slug} keep ok at=${atOf(finding.where)} rule=${finding.rule} why=<kebab-case-reason>.`);
+  }
+  return problems;
+}
+
+function gh(args) {
+  const [command, prefix] = process.env.GSD_GH ? [process.execPath, [process.env.GSD_GH]] : ['gh', []];
+  const result = spawnSync(command, [...prefix, ...args], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  if (result.status !== 0) return null;
+  try {
+    return JSON.parse(result.stdout);
+  } catch {
+    return null;
+  }
+}
+
+const RUN_PASSED = ['success', 'neutral', 'skipped'];
+const RUN_UNDECIDED = ['cancelled', 'skipped'];
+const short = (sha) => sha.slice(0, 7);
+
+function githubProblems(given) {
+  const pr = gh(['pr', 'view', given.pr, '--json', 'state,headRefOid,headRefName']);
+  if (!pr) return [`gh could not read PR #${given.pr}. Fix: check the number and gh auth status, then log ship again.`];
+  const head = git(['rev-parse', 'HEAD']).trim();
+  const problems = [];
+  if (pr.state !== 'OPEN') problems.push(`PR #${given.pr} is ${pr.state.toLowerCase()}, not open. Fix: ship an open PR; open a new one if this one is closed.`);
+  if (pr.headRefOid !== head) problems.push(`PR #${given.pr} head is ${short(pr.headRefOid)} but HEAD is ${short(head)}. Fix: git push, then log ship again.`);
+  const runs = gh(['run', 'list', '--branch', pr.headRefName, '--limit', '200', '--json', 'name,headSha,status,conclusion,createdAt']);
+  if (!runs) return [...problems, `gh could not list the workflow runs of ${pr.headRefName}. Fix: check gh auth status, then log ship again.`];
+  for (const run of runs.filter((item) => item.headSha === head)) {
+    if (run.status !== 'completed') problems.push(`run "${run.name}" on HEAD is ${run.status}. Fix: wait for it to finish (gh run watch), then log ship again.`);
+    else if (!RUN_PASSED.includes(run.conclusion)) problems.push(`run "${run.name}" on HEAD ended ${run.conclusion}. Fix: fix the cause and push; log ship again once it passes.`);
+  }
+  const decided = runs.filter((run) => run.status === 'completed' && !RUN_UNDECIDED.includes(run.conclusion)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  if (decided.length > 0) {
+    const first = decided[0].headSha;
+    const firstPass = decided.filter((run) => run.headSha === first).every((run) => RUN_PASSED.includes(run.conclusion)) ? 'pass' : 'fail';
+    if (given['gate-first-pass'] !== firstPass) {
+      problems.push(`gate-first-pass=${given['gate-first-pass']} but the first gate runs, on ${short(first)}, ${firstPass === 'pass' ? 'passed' : 'failed'}. Fix: log the ship line with gate-first-pass=${firstPass}.`);
+    }
   }
   return problems;
 }

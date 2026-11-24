@@ -642,6 +642,45 @@ test('ship refuses diff-check=accepted when nothing blocks', () => {
   assertRefused(run, run.ship({ diff: 'accepted' }), /nothing blocks.* Fix: .*diff-check=pass/);
 });
 
+const CLEAN_CHANGE = { 'src/a.js': 'export const a = 2;\n' };
+const ciRun = (headSha, conclusion, createdAt, status = 'completed') => ({ name: 'gate', headSha, status, conclusion, createdAt });
+
+const GITHUB_REFUSALS = [
+  ['a PR whose head is not HEAD', () => ({ 'pr view': { state: 'OPEN', headRefOid: 'f'.repeat(40), headRefName: 'work' } }), {}, /head is fffffff but HEAD is .* Fix: git push/],
+  ['a PR that is not open', (head) => ({ 'pr view': { state: 'MERGED', headRefOid: head, headRefName: 'work' } }), {}, /PR #5 is merged, not open\. Fix: /],
+  ['a PR gh cannot read', () => ({ 'pr view': undefined }), {}, /gh could not read PR #5\. Fix: /],
+  ['runs gh cannot list', () => ({ 'run list': undefined }), {}, /gh could not list the workflow runs of work\. Fix: /],
+  ['a failed run on HEAD', (head) => ({ 'run list': [ciRun(head, 'failure', '2026-11-01T10:00:00Z')] }), {}, /run "gate" on HEAD ended failure\. Fix: /],
+  ['a run on HEAD still in progress', (head) => ({ 'run list': [ciRun(head, '', '2026-11-01T10:00:00Z', 'in_progress')] }), {}, /run "gate" on HEAD is in_progress\. Fix: /],
+  [
+    'gate-first-pass=pass when the first run failed',
+    (head) => ({ 'run list': [ciRun(head, 'success', '2026-11-01T11:00:00Z'), ciRun('a'.repeat(40), 'failure', '2026-11-01T10:00:00Z')] }),
+    {},
+    /gate-first-pass=pass but the first gate runs, on aaaaaaa, failed\. Fix: .*gate-first-pass=fail/,
+  ],
+  ['gate-first-pass=fail when the first run passed', (head) => ({ 'run list': [ciRun(head, 'success', '2026-11-01T10:00:00Z')] }), { gate: 'fail' }, /gate-first-pass=fail but .* passed\. Fix: /],
+];
+
+for (const [name, gh, shipped, expected] of GITHUB_REFUSALS) {
+  test(`ship refuses ${name}`, () => {
+    const run = shipRun(CLEAN_CHANGE, { gh });
+    assertRefused(run, run.ship(shipped), expected);
+  });
+}
+
+test('ship takes gate-first-pass=fail when a cancelled run came before the first failure', () => {
+  const runs = (head) => ({
+    'run list': [ciRun(head, 'success', '2026-11-01T12:00:00Z'), ciRun('b'.repeat(40), 'failure', '2026-11-01T11:00:00Z'), ciRun('a'.repeat(40), 'cancelled', '2026-11-01T10:00:00Z')],
+  });
+  const run = shipRun(CLEAN_CHANGE, { gh: runs });
+  assert.equal(run.ship({ gate: 'fail' }).status, 0, run.log());
+});
+
+test('ship takes the reported gate-first-pass when the branch has no workflow runs', () => {
+  const run = shipRun(CLEAN_CHANGE);
+  assert.equal(run.ship({ gate: 'fail' }).status, 0);
+});
+
 test('ship refuses a run without an intake line', () => {
   const run = shipRun({ 'src/a.js': 'export const a = 2;\n' });
   writeFileSync(join(run.home, 'proj', 's', 'log.md'), '');
