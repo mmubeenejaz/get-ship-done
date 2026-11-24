@@ -129,7 +129,7 @@ function verifyShip(slug, dir, given) {
   const base = [`origin/${ref}`, ref, sha].find((candidate) => candidate && isCommit(candidate));
   if (!base) fail(`gsd log: ship refused, the intake base "${intake.given.base}" is not a commit git knows. Fix: git fetch, or log a new intake line whose base=<branch>@<sha> resolves.`);
   const settings = readConfig(repoRoot())?.values ?? {};
-  const measured = settings.coverage ? coverageFindings(base, settings) : [];
+  const measured = [...(settings.coverage ? coverageFindings(base, settings) : []), ...(settings.mutate ? mutationFindings(base, settings) : [])];
   const problems = [...diffProblems(slug, base, given, entries, measured), ...criteriaProblems(slug, dir, intake.given.lane, entries), ...githubProblems(given)];
   if (problems.length > 0) fail(['gsd log: ship refused, nothing was written. Fix each problem, then log ship again:', ...capped(problems, REVIEW_LIMIT)].join('\n'));
 }
@@ -871,6 +871,53 @@ function coverage(args) {
   return 0;
 }
 
+function changed(args) {
+  const lines = [];
+  for (const [path, numbers] of changedSourceLines(branchRange(args).base, readConfig(repoRoot())?.values ?? {})) {
+    let start = numbers[0];
+    numbers.forEach((number, i) => {
+      if (numbers[i + 1] === number + 1) return;
+      lines.push(`${path}:${start}-${number}`);
+      start = numbers[i + 1];
+    });
+  }
+  process.stdout.write(lines.map((line) => `${line}\n`).join(''));
+  return 0;
+}
+
+const MUTANT_ESCAPED = { Survived: 'survived: the tests still pass with this change', NoCoverage: 'survived: no test runs it' };
+
+function mutationFindings(base, settings, file = settings['mutation-report'] ?? 'reports/mutation/mutation.json') {
+  const root = repoRoot();
+  const text = freshReport('mutation', file, root);
+  const report = (() => {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
+  })();
+  if (!report?.files || typeof report.files !== 'object') fail(`gsd mutation: ${file} is not a mutation-testing-elements JSON report (no "files" object). Fix: have the mutation tool write its JSON report (Stryker: the "json" reporter), then run this again.`);
+  const files = new Map(Object.entries(report.files).map(([path, entry]) => [repoPath(path, root), entry.mutants ?? []]));
+  const findings = [];
+  for (const [path, lines] of changedSourceLines(base, settings)) {
+    for (const mutant of files.get(path) ?? []) {
+      const line = mutant.location?.start?.line;
+      if (!MUTANT_ESCAPED[mutant.status] || !lines.includes(line)) continue;
+      findings.push({ where: `${path}:${line}`, rule: 'survived-mutant', text: `${mutant.mutatorName} (${mutant.replacement ?? 'removed'}) ${MUTANT_ESCAPED[mutant.status]}. Fix: add or sharpen a test that fails on this mutant, or keep it with the reason (such as an equivalent mutant).` });
+    }
+  }
+  return findings;
+}
+
+function mutation(args) {
+  const settings = readConfig(repoRoot())?.values ?? {};
+  const { base, flags } = branchRange(args, ['report']);
+  const findings = mutationFindings(base, settings, flags.report);
+  process.stdout.write([...capped(findings.map((finding) => findingLine('review', finding)), REVIEW_LIMIT), `mutation: ${ruleCounts(findings, ['survived-mutant'])}`].join('\n') + '\n');
+  return 0;
+}
+
 function deprecatedReport() {
   const root = repoRoot();
   const globs = readConfig(root)?.values.deprecated ?? [];
@@ -901,7 +948,7 @@ function deprecatedReport() {
   return 0;
 }
 
-const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard, features, 'ui-audit': uiAudit, summary, deprecated: deprecatedReport, coverage };
+const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard, features, 'ui-audit': uiAudit, summary, deprecated: deprecatedReport, coverage, changed, mutation };
 export const COMMAND_NAMES = Object.keys(COMMANDS);
 const RUN_COMMAND = new RegExp(`gsd\\.mjs["']?\\s+(?:${COMMAND_NAMES.filter((name) => name !== 'guard').join('|')})\\b`);
 

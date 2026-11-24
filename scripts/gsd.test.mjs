@@ -759,6 +759,45 @@ test('ship refuses an uncovered changed line when the guide has coverage, until 
   assert.equal(shipped.status, 0, shipped.stderr);
 });
 
+test('changed prints the changed line ranges of source files, not tests or docs', () => {
+  const cwd = branch({ 'src/a.js': 'export const a = 1;\nexport const b = 2;\nexport const c = 3;\n', 'src/b.py': 'x = 1\n', 'src/a.test.js': 'test("b", () => {});\n', 'README.md': 'more\n' });
+  const result = gsd(['changed', '--base', 'main'], { cwd });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'src/a.js:2-3\nsrc/b.py:1-1\n');
+});
+
+const mutant = (line, status) => ({ id: `${line}${status}`, mutatorName: 'ConditionalExpression', replacement: 'true', status, location: { start: { line, column: 1 }, end: { line, column: 9 } } });
+const MUTATION_REPORT = (path = 'src/a.js') => JSON.stringify({ schemaVersion: '1', thresholds: { high: 80, low: 60 }, files: { [path]: { language: 'javascript', source: '', mutants: [mutant(1, 'Survived'), mutant(2, 'Survived'), mutant(2, 'Killed'), mutant(3, 'NoCoverage')] } } });
+const MUTATED_CHANGE = { 'src/a.js': 'export const a = 1;\nexport const b = 2;\nexport const c = 3;\n' };
+
+test('mutation lists a survived or uncovered mutant on a changed line', () => {
+  const cwd = branch(MUTATED_CHANGE, { guide: '## Get Ship Done\n\n- mutation-report: `out/mutation.json`\n' });
+  write(cwd, 'out/mutation.json', MUTATION_REPORT());
+  const result = gsd(['mutation', '--base', 'main'], { cwd });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^review src\/a\.js:2 survived-mutant: ConditionalExpression .* Fix: /m);
+  assert.match(result.stdout, /^review src\/a\.js:3 survived-mutant: .*no test runs it.* Fix: /m);
+  assert.doesNotMatch(result.stdout, /src\/a\.js:1 /);
+  assert.match(result.stdout, /^mutation: 2 survived-mutant$/m);
+});
+
+test('mutation fails on a report that is not mutation-testing-elements JSON', () => {
+  const cwd = branch(MUTATED_CHANGE);
+  write(cwd, 'reports/mutation/mutation.json', '{"results": []}');
+  const result = gsd(['mutation', '--base', 'main'], { cwd });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /mutation-testing-elements.*Fix: /);
+});
+
+test('ship refuses a survived mutant when the guide has mutate, until it is kept', () => {
+  const guide = '## Get Ship Done\n\n- mutate: `npx stryker run`\n';
+  const lines = ['2026-11-01 keep ok at=src/a.js:2 rule=survived-mutant why=equivalent-mutant'];
+  const run = shipRun(MUTATED_CHANGE, { guide, lines });
+  write(run.cwd, 'reports/mutation/mutation.json', MUTATION_REPORT());
+  assertRefused(run, run.ship(), /gsd log s keep ok at=src\/a\.js:3 rule=survived-mutant/);
+  assert.doesNotMatch(run.ship().stderr, /at=src\/a\.js:2 /);
+});
+
 const CLEAN_CHANGE = { 'src/a.js': 'export const a = 2;\n' };
 const ciRun = (headSha, conclusion, createdAt, status = 'completed') => ({ name: 'gate', headSha, status, conclusion, createdAt });
 
