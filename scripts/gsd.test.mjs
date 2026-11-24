@@ -375,6 +375,37 @@ test('features omits a feature whose paths the branch does not touch', () => {
   assert.deepEqual(result.stdout.trim().split('\n'), ['unmapped src/other/x.js', 'features: 0 touched, 1 unmapped']);
 });
 
+function mappedBranchWith(change) {
+  const cwd = mappedBranch();
+  git(cwd, 'switch', '-q', '-c', 'other-work', 'main');
+  change(cwd);
+  git(cwd, 'add', '-A');
+  git(cwd, 'commit', '-q', '-m', 'other work');
+  return gsd(['features', '--base', 'main'], { cwd });
+}
+
+test('features lists the feature a file was moved out of', () => {
+  const result = mappedBranchWith((cwd) => {
+    mkdirSync(join(cwd, 'src/shared'), { recursive: true });
+    git(cwd, 'mv', 'src/search/index.js', 'src/shared/find.js');
+  });
+  assert.match(result.stdout, /^feature docs\/feature-map\/search\.md$/m);
+  assert.match(result.stdout, /^unmapped src\/shared\/find\.js$/m);
+});
+
+test('features lists a feature when only its spec changes', () => {
+  const result = mappedBranchWith((cwd) => write(cwd, 'e2e/search.spec.js', 'test("s", () => {});\n'));
+  assert.match(result.stdout, /^feature docs\/feature-map\/search\.md$/m);
+});
+
+test('features warns about a feature file without a Paths line', () => {
+  const result = mappedBranchWith((cwd) => {
+    write(cwd, 'docs/feature-map/export.md', '# Export\n\n**Paths:** src/export\n');
+    write(cwd, 'src/other/x.js', 'export const x = 4;\n');
+  });
+  assert.match(result.stderr, /export\.md has no "Paths:" line.* Fix: /);
+});
+
 test('features reads the map folder named by the guide', () => {
   const cwd = mappedBranch({ mapDir: 'docs/map', guide: '## Get Ship Done\n\n- feature-map: `docs/map`\n' });
   assert.match(gsd(['features', '--base', 'main'], { cwd }).stdout, /^feature docs\/map\/search\.md$/m);

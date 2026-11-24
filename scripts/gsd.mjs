@@ -504,9 +504,12 @@ function features(args) {
   const mapDir = (settings['feature-map'] ?? DEFAULT_FEATURE_MAP).replace(/\/$/, '');
   if (!existsSync(join(root, mapDir))) fail(`gsd features: no feature map at ${mapDir}. Fix: run /get-ship-done:setup to seed one, or set "- feature-map: <folder>" in the guide's Get Ship Done section.`);
   const map = readFeatures(root, mapDir);
-  const changed = readDiff(['--name-only', '-M', range]).split('\n').filter(Boolean);
+  for (const feature of map) {
+    if (feature.paths.length === 0) process.stderr.write(`gsd features: ${feature.file} has no "Paths:" line, so no change can touch it. Fix: add a plain line "Paths: <globs>" under its first paragraph.\n`);
+  }
+  const changed = readDiff(['--name-only', '--no-renames', range]).split('\n').filter(Boolean);
   const isTest = (path) => TEST_FILE.test(path) || matchesAny(path, settings.tests ?? []);
-  const touched = map.filter((feature) => changed.some((path) => matchesAny(path, feature.paths)));
+  const touched = map.filter((feature) => changed.some((path) => matchesAny(path, [...feature.paths, ...feature.specs])));
   const unmapped = changed.filter((path) => SOURCE_FILE.test(path) && !isTest(path) && !map.some((feature) => matchesAny(path, feature.paths)));
   const lines = [...touched.flatMap((feature) => [`feature ${feature.file}`, ...feature.specs.map((spec) => `  spec ${spec}`)]), ...unmapped.map((path) => `unmapped ${path}`)];
   process.stdout.write([...lines, `features: ${touched.length} touched, ${unmapped.length} unmapped`].join('\n') + '\n');

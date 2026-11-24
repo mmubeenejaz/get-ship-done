@@ -60,11 +60,11 @@ A feature map tells a builder which user-facing feature a file belongs to, which
 1. Pick three to five features a user would name, from the routes, commands, menus or docs. Add the rest later, as they are touched.
 2. Write `<feature-map>/README.md` and one file per feature in the shape of [references/feature-map](references/feature-map/). The README holds the verification recipe once: Launch, Doctor, Drive, Evidence, Cleanup. Each feature file starts with its name, one paragraph from the user's point of view, a `Paths:` line and a `Specs:` line, then four sections: Sub-features, How to reach it, Driving it, Gotchas.
 3. Use real commands, selectors and spec files from this repo. Prefer stable handles (roles, labels, route paths) over positions. Keep implementation detail out of the map.
-4. Make sure the section's `docs` globs cover the map folder, or the diff check will reject new feature files.
-5. Prove it: follow the recipe once for one feature (launch, doctor, drive, capture evidence, clean up) and confirm the evidence is still there after cleanup. Then run `gsd features --base origin/<base>` on a branch that touches a mapped path and confirm the feature is listed. A recipe that was never run is a draft: say so if the app cannot be launched, and say what blocked it.
+4. Show the drafted map and ask before writing any of it. Make sure the section's `docs` globs cover the map folder, or the diff check will reject new feature files.
+5. Prove it: follow the recipe once for one feature (launch, doctor, drive, capture evidence, clean up) and confirm the evidence is still there after cleanup. Then run `gsd features --base origin/<base>`: it must print no warning about a missing `Paths:` line. A recipe that was never run is a draft: say so if the app cannot be launched, and say what blocked it.
 
 When driving the app keeps needing throwaway scripts, propose a small control command for the project as its own requirement: a few composable subcommands, a dry run on anything destructive, errors that say what to do, `--help`, and JSON output.
 
 ## Finish
 
-Commit on the branch, open a draft PR and report: the section as written, the gaps by level, the features mapped, and what was proven by running it. Never merge, never push to the base branch.
+If a part wrote files, commit them on the branch and open a draft PR. Then report: the section as written, the gaps by level, the features mapped, and what was proven by running it. Never merge, never push to the base branch.
