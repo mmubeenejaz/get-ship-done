@@ -333,6 +333,49 @@ test('diff-check fails when git cannot produce the diff', () => {
   assert.match(result.stderr, /could not read the diff.* Fix: /);
 });
 
+const SEARCH_FEATURE = ['# Search', '', 'Find a note by title.', '', 'Paths: `src/search/**`, `server/search.js`', 'Specs: `e2e/search.spec.js`', '', '## Sub-features', ''].join('\n');
+
+function mappedBranch({ mapDir = 'docs/feature-map', guide } = {}) {
+  const cwd = project({
+    'src/search/index.js': 'export const s = 1;\n',
+    'src/other/x.js': 'export const x = 1;\n',
+    'src/other/x.test.js': 'test("x", () => {});\n',
+    [`${mapDir}/README.md`]: '# Map\n',
+    [`${mapDir}/search.md`]: SEARCH_FEATURE,
+    ...(guide ? { 'AGENTS.md': guide } : {}),
+  });
+  git(cwd, 'switch', '-q', '-c', 'work');
+  write(cwd, 'src/search/index.js', 'export const s = 2;\n');
+  write(cwd, 'src/other/x.js', 'export const x = 2;\n');
+  write(cwd, 'src/other/x.test.js', 'test("x2", () => {});\n');
+  write(cwd, 'README.md', 'changed\n');
+  git(cwd, 'add', '-A');
+  git(cwd, 'commit', '-q', '-m', 'work');
+  return cwd;
+}
+
+test('features lists each touched feature with its specs and the unmapped source files', () => {
+  const result = gsd(['features', '--base', 'main'], { cwd: mappedBranch() });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    'feature docs/feature-map/search.md',
+    '  spec e2e/search.spec.js',
+    'unmapped src/other/x.js',
+    'features: 1 touched, 1 unmapped',
+  ]);
+});
+
+test('features reads the map folder named by the guide', () => {
+  const cwd = mappedBranch({ mapDir: 'docs/map', guide: '## Get Ship Done\n\n- feature-map: `docs/map`\n' });
+  assert.match(gsd(['features', '--base', 'main'], { cwd }).stdout, /^feature docs\/map\/search\.md$/m);
+});
+
+test('features without a map exits 1 naming setup', () => {
+  const result = gsd(['features', '--base', 'main'], { cwd: branch({}) });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /\/get-ship-done:setup/);
+});
+
 test('diff-check rejects an unknown base ref and names the fix', () => {
   const result = gsd(['diff-check', '--base', 'nope'], { cwd: branch({}) });
   assert.equal(result.status, 1);

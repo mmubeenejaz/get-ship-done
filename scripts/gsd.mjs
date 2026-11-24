@@ -283,7 +283,7 @@ function commentText(path, line) {
 
 function readDiff(args) {
   const output = git(['diff', ...args]);
-  if (output === null) fail(`gsd diff-check: could not read the diff (git diff ${args.join(' ')} failed), so nothing was checked. Fix: make sure the base and HEAD share history (git fetch), then run it again.`);
+  if (output === null) fail(`gsd: could not read the diff (git diff ${args.join(' ')} failed), so nothing was checked. Fix: make sure the base and HEAD share history (git fetch), then run it again.`);
   return output;
 }
 
@@ -305,11 +305,15 @@ function addedLines(range) {
   return added;
 }
 
-function diffCheck(args) {
+function branchRange(args) {
   const { flags } = parseFlags(args, ['base']);
   const base = flags.base;
-  if (!base || git(['rev-parse', '--verify', '--quiet', `${base}^{commit}`]) === null) fail(`gsd diff-check: "${base ?? ''}" is not a known base ref. Fix: git fetch, then pass --base origin/<base branch>.`);
-  const range = `${base}...HEAD`;
+  if (!base || git(['rev-parse', '--verify', '--quiet', `${base}^{commit}`]) === null) fail(`gsd: "${base ?? ''}" is not a known base ref. Fix: git fetch, then pass --base origin/<base branch>.`);
+  return { base, range: `${base}...HEAD` };
+}
+
+function diffCheck(args) {
+  const { base, range } = branchRange(args);
   const settings = readConfig(repoRoot())?.values ?? {};
   const isTest = (path) => TEST_FILE.test(path) || matchesAny(path, settings.tests ?? []);
   const blocking = [];
@@ -479,7 +483,36 @@ function guard() {
   return 0;
 }
 
-const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard };
+const DEFAULT_FEATURE_MAP = 'docs/feature-map';
+const SOURCE_FILE = new RegExp(`\\.(?:${[...SLASH_COMMENTS, ...HASH_COMMENTS, 'sql'].join('|')})$`, 'i');
+
+function readFeatures(root, mapDir) {
+  const listLine = (text, label) => unquote(text.match(new RegExp(`^${label}:\\s*(.+)$`, 'm'))?.[1] ?? '').split(',').map((item) => item.trim()).filter(Boolean);
+  return readdirSync(join(root, mapDir))
+    .filter((name) => /\.md$/i.test(name) && !KEPT_DOC.test(name))
+    .sort()
+    .map((name) => {
+      const text = readFileSync(join(root, mapDir, name), 'utf8');
+      return { file: `${mapDir}/${name}`, paths: listLine(text, 'Paths'), specs: listLine(text, 'Specs') };
+    });
+}
+
+function features(args) {
+  const { range } = branchRange(args);
+  const root = repoRoot();
+  const settings = readConfig(root)?.values ?? {};
+  const mapDir = (settings['feature-map'] ?? DEFAULT_FEATURE_MAP).replace(/\/$/, '');
+  if (!existsSync(join(root, mapDir))) fail(`gsd features: no feature map at ${mapDir}. Fix: run /get-ship-done:setup to seed one, or set "- feature-map: <folder>" in the guide's Get Ship Done section.`);
+  const map = readFeatures(root, mapDir);
+  const changed = readDiff(['--name-only', '-M', range]).split('\n').filter(Boolean);
+  const isTest = (path) => TEST_FILE.test(path) || matchesAny(path, settings.tests ?? []);
+  const touched = map.filter((feature) => changed.some((path) => matchesAny(path, feature.paths)));
+  const unmapped = changed.filter((path) => SOURCE_FILE.test(path) && !isTest(path) && !map.some((feature) => matchesAny(path, feature.paths)));
+  const lines = [...touched.flatMap((feature) => [`feature ${feature.file}`, ...feature.specs.map((spec) => `  spec ${spec}`)]), ...unmapped.map((path) => `unmapped ${path}`)];
+  process.stdout.write([...lines, `features: ${touched.length} touched, ${unmapped.length} unmapped`].join('\n') + '\n');
+}
+
+const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard, features };
 export const COMMAND_NAMES = Object.keys(COMMANDS);
 
 function main(argv) {
