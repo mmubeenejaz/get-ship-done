@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -232,8 +232,8 @@ function parseFlags(args, names) {
 
 const repoRoot = (cwd = process.cwd()) => git(['rev-parse', '--show-toplevel'], cwd)?.trim() ?? cwd;
 
-export const CONFIG_KEYS = ['gate', 'gate-backup', 'preflight', 'precheck', 'selector', 'migration', 'pr-facts', 'tidy', 'subagent-text', 'tests', 'deprecated', 'docs', 'feature-map', 'verify', 'design', 'coverage', 'lcov', 'mutate', 'mutation-report', 'smoke', 'health'];
-const LIST_KEYS = ['tests', 'deprecated', 'docs'];
+export const CONFIG_KEYS = ['gate', 'gate-backup', 'preflight', 'precheck', 'selector', 'migration', 'pr-facts', 'tidy', 'subagent-text', 'tests', 'deprecated', 'docs', 'feature-map', 'verify', 'design', 'coverage', 'lcov', 'mutate', 'mutation-report', 'smoke', 'health', 'explore', 'explore-hosts', 'explore-skip', 'explore-properties', 'explore-state', 'explore-browser'];
+const LIST_KEYS = ['tests', 'deprecated', 'docs', 'explore-hosts', 'explore-skip'];
 const GUIDES = ['AGENTS.md', 'CLAUDE.md'];
 const SECTION = /^##\s+Get Ship Done\s*$/i;
 
@@ -947,7 +947,43 @@ function deprecatedReport() {
   return 0;
 }
 
-const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard, features, 'ui-audit': uiAudit, summary, deprecated: deprecatedReport, coverage, changed, mutation };
+const EXPLORE_SECONDS = 120;
+const positiveNumber = (value, flag) => {
+  if (value === undefined) return undefined;
+  if (!/^\d+$/.test(value) || Number(value) === 0) fail(`gsd explore: --${flag} ${value} is not a positive whole number.`);
+  return Number(value);
+};
+
+async function exploreCommand(args) {
+  const { flags } = parseFlags(args, ['url', 'time', 'seed', 'start', 'browser', 'out', 'steps']);
+  const root = repoRoot();
+  const settings = readConfig(root)?.values ?? {};
+  const url = flags.url ?? settings.explore;
+  if (!url) fail('gsd explore: no URL to explore. Fix: pass --url <local app url>, or set "- explore: <url>" in the guide\'s Get Ship Done section.');
+  const { checkHost, explore } = await import('./explore.mjs');
+  checkHost(url, settings['explore-hosts'] ?? [], fail);
+  const seed = flags.seed === undefined ? Math.floor(Math.random() * 1e9) : Number(flags.seed);
+  const out = resolve(flags.out ?? join(tmpdir(), `gsd-explore-${seed}`));
+  const { steps, violations } = await explore({
+    url,
+    seed,
+    seconds: positiveNumber(flags.time, 'time') ?? EXPLORE_SECONDS,
+    steps: positiveNumber(flags.steps, 'steps') ?? Infinity,
+    start: flags.start?.split(',').map((path) => path.trim()).filter(Boolean) ?? [],
+    skip: settings['explore-skip'] ?? [],
+    browser: flags.browser ?? settings['explore-browser'],
+    out,
+    root,
+    propertiesFile: settings['explore-properties'],
+    state: settings['explore-state'],
+    fail,
+  });
+  const lines = violations.map(({ property, where, message, trace }) => `violation ${property} ${where}: ${message} (trace ${trace})`);
+  process.stdout.write([...capped(lines, REVIEW_LIMIT), `explore: ${counted(steps, 'step')}, ${counted(violations.length, 'violation')}, seed ${seed}, out ${out}`].join('\n') + '\n');
+  return violations.length > 0 ? 1 : 0;
+}
+
+const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard, features, 'ui-audit': uiAudit, summary, deprecated: deprecatedReport, coverage, changed, mutation, explore: exploreCommand };
 export const COMMAND_NAMES = Object.keys(COMMANDS);
 const RUN_COMMAND = new RegExp(`gsd\\.mjs["']?\\s+(?:${COMMAND_NAMES.filter((name) => name !== 'guard').join('|')})\\b`);
 
@@ -961,7 +997,7 @@ function main(argv) {
 const invokedDirectly = process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
 if (invokedDirectly) {
   try {
-    process.exitCode = main(process.argv.slice(2)) ?? 0;
+    process.exitCode = (await main(process.argv.slice(2))) ?? 0;
   } catch (error) {
     if (!(error instanceof Fail)) throw error;
     process.stderr.write(`${error.message}\n`);

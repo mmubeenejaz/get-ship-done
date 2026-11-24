@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Explore fixture</title></head>
+<body>
+<main>
+  <h1>Explore fixture</h1>
+  <button id="break" onclick="throw new Error('planted fault')">Break</button>
+  <div data-explore="skip"><button onclick="throw new Error('skipped fault')">Danger</button></div>
+  <button class="custom-skip" onclick="throw new Error('guide skipped fault')">Custom</button>
+  <input type="file" aria-label="Upload">
+  <a href="clean.html" download>Download</a>
+  <a href="clean.html" target="_blank">New tab</a>
+  <a href="https://example.invalid/">Away</a>
+  <a href="clean.html">Clean page</a>
+</main>
+</body>
+</html>

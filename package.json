@@ -1,0 +1,10 @@
+{
+  "name": "get-ship-done",
+  "private": true,
+  "scripts": {
+    "test": "node --test scripts/gsd.test.mjs scripts/explore.test.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.65.0"
+  }
+}
