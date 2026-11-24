@@ -158,7 +158,7 @@ function globToRegExp(glob) {
 const underDirectory = (path, glob) => !/[*?]/.test(glob) && path.startsWith(`${glob.replace(/\/$/, '')}/`);
 const matchesAny = (path, globs) => globs.some((glob) => globToRegExp(glob).test(path) || underDirectory(path, glob));
 
-const CARD_FIELDS = ['Files', 'Pattern', 'Interface', 'Covers', 'Test first', 'Done when', "Don't", 'Stop if'];
+export const CARD_FIELDS = ['Files', 'Pattern', 'Interface', 'Covers', 'Test first', 'Done when', "Don't", 'Stop if'];
 const FIELD_LINE = new RegExp(`^(${CARD_FIELDS.join('|')}):\\s*(.*)$`);
 const unquote = (text) => text.replace(/`/g, '').trim();
 
@@ -456,6 +456,7 @@ function guard() {
 }
 
 const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard };
+export const COMMAND_NAMES = Object.keys(COMMANDS);
 
 function main(argv) {
   const [name, ...args] = argv;

@@ -6,8 +6,11 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { CARD_FIELDS, COMMAND_NAMES, PHASES } from './gsd.mjs';
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const GSD = join(HERE, 'gsd.mjs');
+const SHIP_SKILL = readFileSync(join(HERE, '..', 'skills', 'ship', 'SKILL.md'), 'utf8');
 const SANDBOX = mkdtempSync(join(tmpdir(), 'gsd-test-'));
 after(() => rmSync(SANDBOX, { recursive: true, force: true }));
 
@@ -442,6 +445,27 @@ for (const command of ['git commit --no-verify -m x', 'git push --no-verify orig
     assert.match(decision.permissionDecisionReason, /Fix: /);
   });
 }
+
+test('every gsd log call in the ship skill uses a known phase', () => {
+  const phases = [...SHIP_SKILL.matchAll(/gsd log <slug> ([a-z-]+)/g)].map((call) => call[1]);
+  assert.ok(phases.length >= 6, `expected the skill to log through gsd, found ${phases.length} calls`);
+  for (const phase of phases) assert.ok(phase in PHASES, `the ship skill logs unknown phase "${phase}"`);
+});
+
+test('every gsd command the ship skill names exists in the script', () => {
+  const named = [...SHIP_SKILL.matchAll(/`gsd ([a-z-]+)/g)].map((call) => call[1]);
+  assert.ok(named.includes('lint') && named.includes('diff-check') && named.includes('config'));
+  for (const name of named) assert.ok(COMMAND_NAMES.includes(name), `the ship skill names unknown command "gsd ${name}"`);
+});
+
+test("the ship skill's card template has every field lint requires", () => {
+  const template = SHIP_SKILL.match(/```\n### T<n>[\s\S]*?```/)?.[0] ?? '';
+  for (const field of CARD_FIELDS) assert.ok(template.includes(`\n${field}:`), `the card template lacks "${field}:"`);
+});
+
+test('no log format in the ship skill is written by hand', () => {
+  assert.doesNotMatch(SHIP_SKILL, /`<date> /);
+});
 
 for (const [name, input] of [['malformed', 'not json'], ['empty', '{}']]) {
   test(`guard lets the command through on ${name} hook input`, () => {

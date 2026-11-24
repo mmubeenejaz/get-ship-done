@@ -93,7 +93,7 @@ Stop if:    the test passes before the change</code></pre>
 <div class="grid">
 <div class="card"><h3>Prove the tests</h3><p>Break the code behind the key criteria, watch the test fail, restore it. A test that stays green is rewritten.</p></div>
 <div class="card"><h3>Cold review</h3><p>A fresh reviewer with read-only tools, on the session's own model, sees only the brief and the diff.</p></div>
-<div class="card"><h3>Lessons</h3><p>Each blocking review finding becomes a checklist line; one that recurs twice becomes a lint rule or test.</p></div>
+<div class="card"><h3>Lessons</h3><p>A review finding a machine can detect becomes a check whose error names the fix. Only judgment calls stay as checklist lines.</p></div>
 <div class="card"><h3>Check routing</h3><p>Tests are picked from the change through the project's selector, never the full suite until the gate.</p></div>
 </div>
 
@@ -108,7 +108,7 @@ Stop if:    the test passes before the change</code></pre>
 <rect class="grp" x="460" y="10" width="200" height="290" rx="14"/><text class="h" x="560" y="36" text-anchor="middle">Each run</text>
 <g class="na"><rect x="35" y="60" width="170" height="56" rx="8"/><text class="h" x="120" y="82" text-anchor="middle">ship skill</text><text class="s" x="120" y="102" text-anchor="middle">lanes, cards, sessions</text></g>
 <g class="na"><rect x="35" y="136" width="170" height="56" rx="8"/><text class="h" x="120" y="158" text-anchor="middle">reviewer</text><text class="s" x="120" y="178" text-anchor="middle">cold, read-only</text></g>
-<g class="na"><rect x="35" y="212" width="170" height="56" rx="8"/><text class="h" x="120" y="234" text-anchor="middle">Lessons</text><text class="s" x="120" y="254" text-anchor="middle">grow from reviews</text></g>
+<g class="na"><rect x="35" y="212" width="170" height="56" rx="8"/><text class="h" x="120" y="234" text-anchor="middle">Lessons</text><text class="s" x="120" y="254" text-anchor="middle">judgment calls only</text></g>
 <g class="nt"><rect x="255" y="60" width="170" height="56" rx="8"/><text class="h" x="340" y="82" text-anchor="middle">AGENTS.md</text><text class="s" x="340" y="102" text-anchor="middle">gate, selector, checks</text></g>
 <g class="nt"><rect x="255" y="136" width="170" height="56" rx="8"/><text class="h" x="340" y="158" text-anchor="middle">Area rules</text><text class="s" x="340" y="178" text-anchor="middle">loaded on demand</text></g>
 <g class="nt"><rect x="255" y="212" width="170" height="56" rx="8"/><text class="h" x="340" y="234" text-anchor="middle">Project tools</text><text class="s" x="340" y="254" text-anchor="middle">selector, facts, tidy</text></g>
