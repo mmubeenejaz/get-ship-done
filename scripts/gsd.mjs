@@ -2,7 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 class Fail extends Error {}
@@ -506,10 +506,37 @@ function branchRange(args) {
   return { base, range: `${base}...HEAD` };
 }
 
+const SCRIPT_FILE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro)$/i;
+const SCRIPT_EXTENSIONS = ['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'mts', 'cts', 'vue', 'svelte'];
+const SCRIPT_SPECIFIER = /\b(?:from|import|require)\s*\(?\s*['"]([^'"]+)['"]/g;
+const PYTHON_IMPORT = /^\s*(?:from\s+(\.*)([\w.]*)\s+import\s+([\w\s,()]+?)|import\s+([\w.]+))\s*(?:#.*)?$/;
+
+const withScriptFiles = (target) => [target, ...SCRIPT_EXTENSIONS.flatMap((extension) => [`${target}.${extension}`, `${target}/index.${extension}`])];
+
+function importTargets(path, line) {
+  if (SCRIPT_FILE.test(path)) {
+    const targets = [];
+    for (const [, specifier] of line.matchAll(SCRIPT_SPECIFIER)) {
+      if (specifier.startsWith('.')) targets.push(...withScriptFiles(posix.join(posix.dirname(path), specifier)));
+      else if (/^[@~]\//.test(specifier)) targets.push(...withScriptFiles(specifier.slice(2)), ...withScriptFiles(`src/${specifier.slice(2)}`));
+    }
+    return targets;
+  }
+  if (!path.endsWith('.py')) return [];
+  const match = line.match(PYTHON_IMPORT);
+  if (!match) return [];
+  const [, dots = '', from, names, plain] = match;
+  if (plain) return [`${plain.replace(/\./g, '/')}/`, `${plain.replace(/\./g, '/')}.py`];
+  const anchor = dots ? posix.join(posix.dirname(path), ...Array(dots.length - 1).fill('..')) : '';
+  const module = posix.join(anchor || '.', from.replace(/\./g, '/'));
+  return [module, ...names.replace(/[()]/g, '').split(',').map((name) => name.trim().split(/s+/)[0]).filter(Boolean).map((name) => posix.join(module, name))].flatMap((target) => [`${target}/`, `${target}.py`]);
+}
+
 function diffFindings(base) {
   const range = `${base}...HEAD`;
   const settings = readConfig(repoRoot())?.values ?? {};
   const isTest = testFileMatcher(settings);
+  const deprecated = settings.deprecated ?? [];
   const blocking = [];
   const review = [];
   const block = (where, rule, problem, fix) => blocking.push({ where, rule, text: `${problem}. Fix: ${fix}.` });
@@ -542,6 +569,10 @@ function diffFindings(base) {
     if (!added) {
       if (commentText(path, text) !== null) note(where, 'comment-near-change', 'an unchanged comment sits next to changed code', 'update it if the change makes it untrue, remove it if it no longer meets Comments, otherwise leave it');
       continue;
+    }
+    if (deprecated.length > 0) {
+      if (matchesAny(path, deprecated)) note(where, 'deprecated-edit', 'a line is added inside deprecated code', 'move the caller onto the code that replaces it, or delete this area if the change supersedes it; keep the edit only for a fix the area needs until then');
+      else if (importTargets(path, text).some((target) => matchesAny(target, deprecated))) block(where, 'deprecated-import', 'new code imports deprecated code', 'import the code that replaces it; if none exists yet, ask the user before adding a caller');
     }
     if (UI_FILE.test(path) && !isTest(path)) for (const { rule, problem, fix } of slopFindings(text)) note(where, rule, problem, fix);
     if (isTest(path) && SKIPPED_TEST.test(text)) block(where, 'test-skipped', 'a test is skipped', 'make it pass; if the test itself is wrong, say why in the PR and ask the user');
