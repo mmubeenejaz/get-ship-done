@@ -1106,6 +1106,8 @@ test('summary shows checkpoints passed above the threshold without a hand-off', 
   assert.match(result.stdout, /^\| Hand-off \| 2 checkpoints above 200k tokens without a hand-off \(largest 300k\) \|$/m);
   write(join(home, 'proj', 's'), 'log.md', '2026-11-01 intake ok lane=Risky base=main@abc\n');
   assert.match(gsd(['summary', 's'], { cwd, home }).stdout, /^\| Hand-off \| none needed \|$/m);
+  write(join(home, 'proj', 's'), 'log.md', ['2026-11-01 intake ok lane=Risky base=main@abc', '2026-11-01 context high tokens=250000', '2026-11-01 next "keep going"', '2026-11-02 context high tokens=320000', '2026-11-02 next "hand off"', '2026-11-02 handoff started session=b', ''].join('\n'));
+  assert.match(gsd(['summary', 's'], { cwd, home }).stdout, /^\| Hand-off \| 1 checkpoint above 200k tokens without a hand-off \(largest 250k\) \|$/m, 'a later hand-off does not clear a checkpoint the session ran past');
 });
 
 test('guard asks on the PowerShell tool as well', () => {

@@ -774,7 +774,12 @@ function guard() {
     if (RUN_COMMAND.test(command)) markSession(marker);
     if (!existsSync(marker)) return 0;
     const decision = decide(command, input.cwd ?? process.cwd());
-    const additionalContext = handoffContext(command, input);
+    let additionalContext = null;
+    try {
+      additionalContext = handoffContext(command, input);
+    } catch (error) {
+      process.stderr.write(`gsd guard: skipped the hand-off check after an error: ${error.message}\n`);
+    }
     if (!decision && !additionalContext) return 0;
     const [permissionDecision, permissionDecisionReason] = decision ?? [];
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision, permissionDecisionReason, additionalContext: additionalContext ?? undefined } }));
@@ -820,9 +825,16 @@ const counted = (count, noun) => `${count} ${noun}${count === 1 ? '' : 's'}`;
 const lastByKey = (entries, key) => [...new Map(entries.map((entry) => [key(entry), entry])).values()];
 
 function handoffResult(entries) {
-  const high = ofPhase(entries, 'context');
-  if (high.length === 0) return 'none needed';
-  const missed = ofPhase(entries.slice(entries.findLastIndex((entry) => entry.phase === 'handoff') + 1), 'context');
+  if (!entries.some((entry) => entry.phase === 'context')) return 'none needed';
+  const missed = [];
+  let open = null;
+  for (const entry of entries) {
+    if (entry.phase === 'handoff') open = null;
+    if (entry.phase !== 'context') continue;
+    if (open) missed.push(open);
+    open = entry;
+  }
+  if (open) missed.push(open);
   if (missed.length === 0) return 'handed off at each checkpoint above the threshold';
   const largest = Math.max(...missed.map((entry) => Number(entry.given.tokens)));
   return `${counted(missed.length, 'checkpoint')} above ${thousands(HANDOFF_TOKENS)} tokens without a hand-off (largest ${thousands(largest)})`;

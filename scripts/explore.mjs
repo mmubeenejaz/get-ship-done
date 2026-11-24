@@ -11,6 +11,7 @@ const BACK_CHANCE = 0.1;
 const FILL_VALUES = ['', 'a', 'Test value', '0', '-1', '9999999999', 'x'.repeat(300), `<b>&'"`, 'Zoë Ångström', 'user@example.com'];
 const BROWSER_CHANNELS = [undefined, 'chrome', 'msedge'];
 const NETWORK_ECHO = /^Failed to load resource\b/;
+const KEBAB = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 function seeded(seed) {
   let state = seed >>> 0;
@@ -116,6 +117,9 @@ function pageFaults() {
 async function tools({ root, channel, propertiesFile, fail }) {
   const playwright = loadPlaywright(root, fail);
   const properties = propertiesFile ? ((await import(pathToFileURL(resolve(root, propertiesFile)).href)).default ?? {}) : {};
+  for (const name of Object.keys(properties)) {
+    if (!KEBAB.test(name)) fail(`gsd explore: property "${name}" in ${propertiesFile} is not kebab-case. Fix: rename it, for example ${name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase()}, so a violation can be kept by name at ship.`);
+  }
   const axe = projectModule(root, ['@axe-core/playwright'])?.default ?? null;
   return { browser: await launch(playwright, channel, fail), properties, axe };
 }
@@ -123,6 +127,7 @@ async function tools({ root, channel, propertiesFile, fail }) {
 async function openSession({ browser, properties, axe }, { home, viewport, root, state, skip = [], record }) {
   const origin = new URL(home).origin;
   const context = await browser.newContext({ viewport, acceptDownloads: false, ...(state ? { storageState: resolve(root, state) } : {}) });
+  await context.route('**/*', (route) => (route.request().isNavigationRequest() && new URL(route.request().url()).origin !== origin ? route.abort() : route.continue()));
   const page = await context.newPage();
   context.on('page', (opened) => opened.close());
   const actions = [];

@@ -69,7 +69,7 @@ test('explore reports an uncaught error from a planted button and never touches 
   const result = await run('index.html', [], { cwd: root });
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stdout, /^violation page-error \/index\.html: .*planted fault/m);
-  assert.doesNotMatch(result.stdout, /skipped fault|example\.invalid/);
+  assert.doesNotMatch(result.stdout, /skipped fault|touched|example\.invalid/);
   assert.match(result.stdout, /^explore: \d+ steps, \d+ violations?, seed 7/m);
 });
 
@@ -96,6 +96,13 @@ test('explore passes a clean page and runs the guide\'s project properties', asy
   const clean = await run('clean.html', [], { cwd: exploreProject().root });
   assert.equal(clean.status, 0, clean.stdout + clean.stderr);
   assert.match(clean.stdout, /^explore: \d+ steps, 0 violations, seed 7/m);
+});
+
+test('explore refuses a project property whose name is not kebab-case, since ship keeps findings by that name', async () => {
+  const { root } = exploreProject({ guide: '- explore-properties: `properties.mjs`\n', files: { 'properties.mjs': 'export default { noLorem: async () => undefined };\n' } });
+  const result = await run('clean.html', [], { cwd: root });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /property "noLorem" in properties\.mjs is not kebab-case\. Fix: rename it, for example no-lorem/);
 });
 
 test('explore refuses a host that is not local unless the guide lists it', async () => {
