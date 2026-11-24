@@ -98,8 +98,10 @@ function parseLine([date, phase, ...rest]) {
 
 const runDir = (slug) => join(home(), repoName(), slug);
 
-function runEntries(slug) {
-  const file = join(runDir(slug), 'log.md');
+const ofPhase = (entries, phase) => entries.filter((entry) => entry.phase === phase);
+
+function runEntries(dir) {
+  const file = join(dir, 'log.md');
   if (!existsSync(file)) return [];
   return readFileSync(file, 'utf8').split(/\r?\n/).map((line) => parseLine(line.split(' '))).filter(Boolean);
 }
@@ -107,32 +109,32 @@ function runEntries(slug) {
 function log([slug, phase, ...rest]) {
   if (!slug || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) fail('gsd log: the first argument is the run slug in kebab-case. Fix: gsd log <slug> <phase> <result> [key=value ...].');
   const { given } = readEntry(phase, rest);
-  if (phase === 'ship') verifyShip(slug, given);
+  const dir = runDir(slug);
+  if (phase === 'ship') verifyShip(slug, dir, given);
   const line = [today(), phase, ...rest].join(' ');
-  mkdirSync(runDir(slug), { recursive: true });
-  appendFileSync(join(runDir(slug), 'log.md'), `${line}\n`);
-  appendFileSync(join(dirname(runDir(slug)), 'history.log'), `${slug} ${line}\n`);
+  mkdirSync(dir, { recursive: true });
+  appendFileSync(join(dir, 'log.md'), `${line}\n`);
+  appendFileSync(join(dirname(dir), 'history.log'), `${slug} ${line}\n`);
 }
 
 const isCommit = (ref) => git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]) !== null;
 const atOf = (where) => where.replace(/\s/g, '%20');
 const findingLine = (kind, { where, rule, text }) => `${kind} ${where} ${rule}: ${text}`;
 
-function verifyShip(slug, given) {
-  const entries = runEntries(slug);
+function verifyShip(slug, dir, given) {
+  const entries = runEntries(dir);
   const intake = entries.findLast((entry) => entry.phase === 'intake');
   if (!intake) fail(`gsd log: ship refused, run ${slug} has no intake line, so there is no base to check against. Fix: gsd log ${slug} intake ok lane=<lane> base=<branch>@<sha>, then log ship again.`);
   const [ref, sha] = intake.given.base.split('@');
   const base = [`origin/${ref}`, ref, sha].find((candidate) => candidate && isCommit(candidate));
   if (!base) fail(`gsd log: ship refused, the intake base "${intake.given.base}" is not a commit git knows. Fix: git fetch, or log a new intake line whose base=<branch>@<sha> resolves.`);
-  const problems = [...diffProblems(slug, base, given, entries), ...criteriaProblems(slug, intake.given.lane, entries), ...githubProblems(given)];
+  const problems = [...diffProblems(slug, base, given, entries), ...criteriaProblems(slug, dir, intake.given.lane, entries), ...githubProblems(given)];
   if (problems.length > 0) fail(['gsd log: ship refused, nothing was written. Fix each problem, then log ship again:', ...capped(problems, REVIEW_LIMIT)].join('\n'));
 }
 
 function diffProblems(slug, base, given, entries) {
   const { blocking, review } = diffFindings(base);
-  const logged = (phase) => entries.filter((entry) => entry.phase === phase);
-  const [kept, accepted] = [logged('keep'), logged('accept')];
+  const [kept, accepted] = [ofPhase(entries, 'keep'), ofPhase(entries, 'accept')];
   const named = (lines, finding) => lines.some(({ given: line }) => line.at === atOf(finding.where) && line.rule === finding.rule);
   const unaccepted = blocking.filter((finding) => !named(accepted, finding));
   const problems = [];
@@ -149,15 +151,15 @@ function diffProblems(slug, base, given, entries) {
 
 const coveredNumbers = (card) => card.fields.Covers?.value.match(/\d+/g)?.map(Number) ?? [];
 
-function criteriaProblems(slug, lane, entries) {
+function criteriaProblems(slug, dir, lane, entries) {
   if (lane === 'Direct') return [];
-  const [criteriaFile, cardsFile] = (lane === 'Standard' ? ['brief.md', 'brief.md'] : ['spec.md', 'plan.md']).map((name) => join(runDir(slug), name));
+  const [criteriaFile, cardsFile] = (lane === 'Standard' ? ['brief.md', 'brief.md'] : ['spec.md', 'plan.md']).map((name) => join(dir, name));
   const numbers = readCriteria(criteriaFile).map((criterion) => criterion.number);
   const cards = existsSync(cardsFile) ? readCards(readFileSync(cardsFile, 'utf8').split(/\r?\n/)) : [];
-  const built = new Set(entries.filter((entry) => entry.phase === 'card').map((entry) => entry.result));
+  const built = new Set(ofPhase(entries, 'card').map((entry) => entry.result));
   const isBuilt = (number) => cards.filter((card) => coveredNumbers(card).includes(number)).every((card) => built.has(card.id));
   const required = built.size === 0 ? numbers : numbers.filter(isBuilt);
-  const logged = new Map(entries.filter((entry) => entry.phase === 'criterion').map((entry) => [Number(entry.result), entry.given]));
+  const logged = new Map(ofPhase(entries, 'criterion').map((entry) => [Number(entry.result), entry.given]));
   const problems = [];
   if (numbers.length === 0) problems.push(`no numbered acceptance criteria in ${criteriaFile}. Fix: keep the approved ${basename(criteriaFile)}, with its "## Acceptance criteria" section, in the run folder.`);
   for (const number of required.filter((item) => !logged.has(item))) problems.push(`criterion ${number} has no criterion line. Fix: gsd log ${slug} criterion ${number} test=<path|none> proven=yes|no.`);
@@ -352,7 +354,7 @@ function lint(args) {
       else if (lineNumber && existsSync(target) && Number(lineNumber) > readFileSync(target, 'utf8').split('\n').length) here(pattern.line, 'pattern-missing', `${card.id} copies ${path}:${lineNumber}, past the end of the file`, 'correct the line number');
       else if (matchesAny(path, deprecated)) here(pattern.line, 'pattern-deprecated', `${card.id} copies ${path}, which the project guide lists as deprecated`, 'copy a current example of the same thing, or ask the user what replaces it');
     }
-    for (const number of covers?.value.match(/\d+/g) ?? []) covered.set(Number(number), { card, line: covers.line });
+    for (const number of coveredNumbers(card)) covered.set(number, { card, line: covers.line });
   }
 
   const sources = [flags.criteria, file, join(dirname(file), 'spec.md')].filter(Boolean);
@@ -718,10 +720,10 @@ const counted = (count, noun) => `${count} ${noun}${count === 1 ? '' : 's'}`;
 const lastByKey = (entries, key) => [...new Map(entries.map((entry) => [key(entry), entry])).values()];
 
 function summary([slug]) {
-  const entries = slug ? runEntries(slug) : [];
+  const entries = slug ? runEntries(runDir(slug)) : [];
   if (entries.length === 0) fail(`gsd summary: no log for run "${slug ?? ''}". Fix: run gsd summary <slug> from the project checkout, with the slug the run logs under.`);
   const last = (phase) => entries.findLast((entry) => entry.phase === phase);
-  const logged = (phase) => entries.filter((entry) => entry.phase === phase);
+  const logged = (phase) => ofPhase(entries, phase);
   const shown = (entry, read) => (entry ? read(entry) : 'not logged');
   const ship = last('ship');
   const finding = ({ given }) => `${given.at} ${given.rule}`;
