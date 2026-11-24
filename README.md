@@ -50,7 +50,7 @@ claude plugin install get-ship-done@get-ship-done
 
 Run it with `/get-ship-done:ship <requirement>`; resume with `/get-ship-done:ship resume <slug>`. Update with `claude plugin marketplace update get-ship-done`.
 
-Requires Node 18 or later on the PATH (the checks and the hook are one script with no dependencies).
+Requires Node 18 or later and git 2.31 or later on the PATH (the checks and the hook are one script with no dependencies).
 
 ## What is enforced, not asked
 

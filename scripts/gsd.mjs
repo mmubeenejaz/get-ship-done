@@ -227,7 +227,7 @@ function lint(args) {
       else if (marked[2] === 'modify' && !exists(marked[1])) here(files.line, 'path-missing', `${card.id} modifies ${marked[1]}, which does not exist`, 'correct the path, or mark it (new)');
       else if (marked[2] === 'new') created.add(marked[1]);
     }
-    for (const entry of pattern && !/^none\b/i.test(pattern.value) ? pattern.value.split(/[,;]/).map(unquote).filter(Boolean) : []) {
+    for (const entry of pattern && !/^none\b/i.test(pattern.value) ? pattern.value.replace(/\([^)]*\)/g, '').split(/[,;]/).map(unquote).filter(Boolean) : []) {
       const [, path, lineNumber] = entry.match(/^(\S+?)(?::(\d+))?(?:\s.*)?$/);
       const target = join(root, path);
       if (!exists(path)) here(pattern.line, 'pattern-missing', `${card.id} copies ${path}, which does not exist`, 'point at real code to copy, or write "none: <reason>"');
@@ -279,11 +279,17 @@ function commentText(path, line) {
   return null;
 }
 
-function addedLines(range, cwd) {
+function readDiff(args) {
+  const output = git(['diff', ...args]);
+  if (output === null) fail(`gsd diff-check: could not read the diff (git diff ${args.join(' ')} failed), so nothing was checked. Fix: make sure the base and HEAD share history (git fetch), then run it again.`);
+  return output;
+}
+
+function addedLines(range) {
   const added = [];
   let path = null;
   let lineNumber = 0;
-  for (const line of (git(['diff', '--unified=0', '--no-color', '-M', range], cwd) ?? '').split('\n')) {
+  for (const line of readDiff(['--unified=0', '--no-color', '-M', range]).split('\n')) {
     if (line.startsWith('+++ ')) path = line.startsWith('+++ b/') ? line.slice(6) : null;
     else if (line.startsWith('@@')) lineNumber = Number(line.match(/\+(\d+)/)[1]);
     else if (line.startsWith('+') && path) added.push({ path, line: lineNumber++, text: line.slice(1) });
@@ -303,7 +309,7 @@ function diffCheck(args) {
   const block = (where, rule, problem, fix) => blocking.push(`block  ${where} ${rule}: ${problem}. Fix: ${fix}.`);
   const note = (where, rule, problem, fix) => review.push(`review ${where} ${rule}: ${problem}. Fix: ${fix}.`);
 
-  for (const entry of (git(['diff', '--name-status', '-M', range]) ?? '').split('\n').filter(Boolean)) {
+  for (const entry of readDiff(['--name-status', '-M', range]).split('\n').filter(Boolean)) {
     const [status, ...paths] = entry.split('\t');
     const path = paths[paths.length - 1];
     const name = basename(path);
@@ -318,7 +324,7 @@ function diffCheck(args) {
   }
 
   const mergeBase = git(['merge-base', base, 'HEAD'])?.trim();
-  for (const entry of (git(['diff', '--numstat', '--no-renames', range]) ?? '').split('\n').filter(Boolean)) {
+  for (const entry of readDiff(['--numstat', '--no-renames', range]).split('\n').filter(Boolean)) {
     const [, removed, path] = entry.split('\t');
     if (!/\.md$/i.test(path) || removed === '-') continue;
     const before = git(['show', `${mergeBase}:${path}`])?.split('\n').length ?? 0;

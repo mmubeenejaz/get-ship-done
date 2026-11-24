@@ -84,7 +84,7 @@ test('log rejects a card line without level and writes nothing', () => {
   const home = freshDir('home');
   const result = gsd(['log', 's', 'card', 'T1', 'builder=fable', 'first-pass=pass', 'commit=abc1234'], { cwd, home });
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /level/);
+  assert.match(result.stderr, /missing level/);
   assert.match(result.stderr, /mechanical\|standard\|judgment/);
   assert.equal(existsSync(join(home, 'proj')), false);
 });
@@ -199,6 +199,10 @@ for (const [name, mutate, expected] of LINT_CASES) {
   });
 }
 
+test('lint reads a Pattern whose note contains a comma', () => {
+  assert.equal(lint(BRIEF.replace('(the existing handler)', '(the handler, simplified)')).status, 0);
+});
+
 test('lint accepts a Pattern of none with a reason', () => {
   assert.equal(lint(BRIEF.replace('src/a.js:1 (the existing handler)', 'none: first file of its kind')).status, 0);
 });
@@ -310,6 +314,16 @@ for (const [name, changes, options] of CLEAN_CASES) {
     assert.match(result.stdout, /^diff-check: 0 blocking, 0 review$/m);
   });
 }
+
+test('diff-check fails when git cannot produce the diff', () => {
+  const cwd = branch({});
+  git(cwd, 'switch', '-q', '--orphan', 'unrelated');
+  git(cwd, 'commit', '-q', '--allow-empty', '-m', 'no shared history');
+  const result = diffCheck(cwd);
+  assert.equal(result.status, 1);
+  assert.doesNotMatch(result.stdout, /0 blocking/);
+  assert.match(result.stderr, /could not read the diff.* Fix: /);
+});
 
 test('diff-check rejects an unknown base ref and names the fix', () => {
   const result = gsd(['diff-check', '--base', 'nope'], { cwd: branch({}) });
