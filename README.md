@@ -1,6 +1,6 @@
 # Get Ship Done by Mubeen
 
-A Claude Code plugin that takes one requirement to a draft pull request. It picks a lane by size and risk (Direct, Standard, Risky), writes one brief or a spec and plan ending in task cards, builds test-first, runs the project's gate, reviews cold where the lane calls for it, and ships. It hands work to fresh sessions at checkpoints so long runs stay cheap.
+A Claude Code plugin that takes one requirement to a draft pull request. It picks a lane by size and risk (Direct, Standard, Risky), writes one brief or a spec and plan ending in task cards, builds test-first, runs the project's gate, reviews every Standard and Risky change cold, and ships only once `gsd` has verified the ship record itself. It hands work to fresh sessions at checkpoints so long runs stay cheap.
 
 Overview with diagrams: https://mmubeenejaz.github.io/get-ship-done/
 
@@ -58,13 +58,14 @@ Rules a machine can decide are checked by `scripts/gsd.mjs`, and every error nam
 
 | Command | Checks |
 |---|---|
-| `gsd log` | a run log line has its phase's required keys; writes `log.md` and a per-repo `history.log` |
+| `gsd log` | a run log line has its phase's required keys; writes `log.md` and a per-repo `history.log`. A `ship` line is refused until gsd's own evidence agrees: the diff check re-run against the intake base with each blocking finding fixed or accepted by the user and each review finding fixed or kept with a reason; the PR open at HEAD; every workflow run on HEAD green and `gate-first-pass` matching the first runs (read through `gh`); and, for Standard and Risky runs, a criterion line per built criterion, one tested criterion proven by breaking the code, and a cold review line |
+| `gsd summary <slug>` | prints the trust record for the PR body: lane, diff-check with kept and accepted findings, cold review, gate first pass, and the criteria with their tests and proof |
 | `gsd lint <brief or plan>` | cards are complete, paths and patterns exist, no pattern is deprecated, every acceptance criterion is covered, no question is open |
 | `gsd diff-check --base <ref>` | no skipped, focused or deleted test; no new suppression or workaround comment; no planning file, stray file or Markdown outside the living docs. Other new comments and docs, unchanged comments next to changed code, and generic UI tokens on new UI lines, are listed for review |
 | `gsd features --base <ref>` | prints the features a branch touches and their specs, from the project's feature map; lists source files no feature claims |
 | `gsd ui-audit [path ...]` | lists generic UI tokens (decorative gradients, glass, emoji, one-off values, removed focus rings, hype copy) in tracked screens, with a tally per rule, as the audit before an unslop |
 | `gsd config` | prints the project section as JSON |
-| `gsd stats` | card first-pass rate by level and builder, gate first-pass rate, outcomes |
+| `gsd stats` | card first-pass rate by level and builder, gate first-pass rate, outcomes, and escaped bugs per layer (deploy, release, post-release) with the checks they added |
 
 A PreToolUse hook (`hooks/hooks.json`) watches Bash and PowerShell commands. In a session that has run `gsd`, a PR merge, a ready mark or a push to the base branch prompts you for approval, and `--no-verify` is denied. Other sessions are untouched.
 
@@ -91,7 +92,7 @@ Without the section the skill finds the gate in the CI config and offers the set
 
 ## Run state
 
-`~/.get-ship-done/<repo>/<slug>/` holds `brief.md` or `spec.md` and `plan.md`, and `log.md`. The draft PR body keeps the criteria and decisions, so the folder is disposable after merge. `~/.get-ship-done/<repo>/history.log` keeps every log line for `gsd stats` and outlives the run folders.
+`~/.get-ship-done/<repo>/<slug>/` holds `brief.md` or `spec.md` and `plan.md`, and `log.md`. The draft PR body keeps the criteria, the decisions and the `gsd summary` trust record, so the folder is disposable after merge. `~/.get-ship-done/<repo>/history.log` keeps every log line for `gsd stats` and outlives the run folders.
 
 ## Changing it
 

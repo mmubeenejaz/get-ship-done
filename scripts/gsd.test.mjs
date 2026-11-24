@@ -898,7 +898,7 @@ test('every gsd log call in the ship skill uses a known phase', () => {
 
 test('every gsd command the ship skill names exists in the script', () => {
   const named = [...SHIP_SKILL.matchAll(/`gsd ([a-z-]+)/g)].map((call) => call[1]);
-  for (const expected of ['lint', 'diff-check', 'config', 'features', 'ui-audit']) assert.ok(named.includes(expected), `the ship skill never names gsd ${expected}`);
+  for (const expected of ['lint', 'diff-check', 'config', 'features', 'ui-audit', 'summary']) assert.ok(named.includes(expected), `the ship skill never names gsd ${expected}`);
   for (const name of named) assert.ok(COMMAND_NAMES.includes(name), `the ship skill names unknown command "gsd ${name}"`);
 });
 
@@ -906,6 +906,11 @@ test('every relative link in the ship skill resolves, including the UI design re
   const links = [...SHIP_SKILL.matchAll(/\]\(([^)#:]+)(?:#[^)]*)?\)/g)].map((link) => link[1]);
   assert.ok(links.includes('references/ui-design.md'), `the ship skill does not link the UI design reference, found: ${links}`);
   for (const link of links) assert.ok(existsSync(join(HERE, '..', 'skills', 'ship', link)), `the ship skill links missing file ${link}`);
+});
+
+test('the ship skill logs every phase the ship line is verified against, and escapes', () => {
+  for (const phase of ['keep', 'accept', 'criterion', 'review', 'escape']) assert.match(SHIP_SKILL, new RegExp(`gsd log <slug> ${phase} `), `the ship skill never logs ${phase}`);
+  assert.doesNotMatch(SHIP_SKILL, /below Opus/, 'every Standard change gets a cold review, whatever the model');
 });
 
 test("the ship skill's card template has every field lint requires", () => {

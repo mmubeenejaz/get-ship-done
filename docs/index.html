@@ -48,7 +48,7 @@ footer{margin-top:56px;color:var(--muted);font-size:14px}
 <main>
 <h1>Get Ship Done</h1>
 <p class="by">by Mubeen</p>
-<p class="lead">A Claude Code plugin that takes one requirement to a draft pull request: the right amount of ceremony for the change, unambiguous task cards, test-first building, the project's own gate, and a cold review where it pays.</p>
+<p class="lead">A Claude Code plugin that takes one requirement to a draft pull request: the right amount of ceremony for the change, unambiguous task cards, test-first building, the project's own gate, a cold review, and a ship record the script verifies itself.</p>
 
 <h2>How a run flows</h2>
 <div class="fig">
@@ -74,7 +74,7 @@ footer{margin-top:56px;color:var(--muted);font-size:14px}
 <table>
 <tr><th>Lane</th><th>When</th><th>Documents</th><th>Approvals</th><th>Review</th></tr>
 <tr><td>Direct</td><td>Under about 50 lines, no open decision, nothing risky</td><td>None</td><td>The diff</td><td>Self-review</td></tr>
-<tr><td>Standard</td><td>One PR, nothing risky</td><td>One brief (spec and plan together)</td><td>1</td><td>Self-review, plus a cold review when the session runs below Opus</td></tr>
+<tr><td>Standard</td><td>One PR, nothing risky</td><td>One brief (spec and plan together)</td><td>1</td><td>Self-review plus a cold review</td></tr>
 <tr><td>Risky</td><td>Auth, permissions, tenant isolation, migrations, money, personal data, security, over about 400 lines, or several PRs</td><td>Spec, then plan</td><td>2</td><td>Self-review plus a cold review</td></tr>
 </table>
 
@@ -93,6 +93,7 @@ Stop if:    the test passes before the change</code></pre>
 <div class="grid">
 <div class="card"><h3>Prove the tests</h3><p>Break the code behind the key criteria, watch the test fail, restore it. A test that stays green is rewritten.</p></div>
 <div class="card"><h3>Cold review</h3><p>A fresh reviewer with read-only tools, on the session's own model, sees only the brief and the diff.</p></div>
+<div class="card"><h3>A verified ship record</h3><p><code>gsd</code> refuses the ship line until it has re-run the diff check, read the PR head and CI runs through <code>gh</code>, and found every review finding fixed or kept with a reason, a criterion line per built criterion, one proven test and the cold review. <code>gsd summary</code> puts that record in the PR, so a reader judges only what needs judgment.</p></div>
 <div class="card"><h3>Lessons</h3><p>A review finding a machine can detect becomes a check whose error names the fix. Only judgment calls stay as checklist lines.</p></div>
 <div class="card"><h3>UI with a direction</h3><p>A UI brief starts from five lines of product direction. Generic tokens are flagged on new lines, and <code>gsd ui-audit</code> triages existing screens before an unslop.</p></div>
 <div class="card"><h3>Check routing</h3><p>Tests are picked from the change through the project's selector, never the full suite until the gate.</p></div>
