@@ -139,7 +139,125 @@ function config(args) {
   process.stdout.write(`${JSON.stringify(found.values, null, 2)}\n`);
 }
 
-const COMMANDS = { log, config };
+function globToRegExp(glob) {
+  let source = '';
+  for (let i = 0; i < glob.length; i++) {
+    const char = glob[i];
+    if (char === '*' && glob[i + 1] === '*') {
+      const dirOnly = glob[i + 2] === '/';
+      source += dirOnly ? '(?:.*/)?' : '.*';
+      i += dirOnly ? 2 : 1;
+    } else if (char === '*') source += '[^/]*';
+    else if (char === '?') source += '[^/]';
+    else source += char.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${source}$`);
+}
+
+const underDirectory = (path, glob) => !/[*?]/.test(glob) && path.startsWith(`${glob.replace(/\/$/, '')}/`);
+const matchesAny = (path, globs) => globs.some((glob) => globToRegExp(glob).test(path) || underDirectory(path, glob));
+
+const CARD_FIELDS = ['Files', 'Pattern', 'Interface', 'Covers', 'Test first', 'Done when', "Don't", 'Stop if'];
+const FIELD_LINE = new RegExp(`^(${CARD_FIELDS.join('|')}):\\s*(.*)$`);
+const unquote = (text) => text.replace(/`/g, '').trim();
+
+function readCards(lines) {
+  const cards = [];
+  let inFence = false;
+  let card = null;
+  lines.forEach((line, index) => {
+    if (/^\s*```/.test(line)) inFence = !inFence;
+    if (inFence) return;
+    const header = line.match(/^###\s+(T\d+)\b(.*)$/);
+    if (header) {
+      card = { id: header[1], line: index + 1, level: header[2].match(/\blevel:\s*(\S+)/)?.[1], fields: {} };
+      cards.push(card);
+    } else if (/^##\s/.test(line)) card = null;
+    else if (card) {
+      const field = line.match(FIELD_LINE);
+      if (field && field[2].trim()) card.fields[field[1]] = { value: field[2].trim(), line: index + 1 };
+    }
+  });
+  return cards;
+}
+
+function readCriteria(file) {
+  if (!existsSync(file)) return [];
+  const criteria = [];
+  let inSection = false;
+  readFileSync(file, 'utf8').split(/\r?\n/).forEach((line, index) => {
+    if (/^##\s/.test(line)) inSection = /^##\s+Acceptance criteria\b/i.test(line);
+    const numbered = inSection && line.match(/^\s*(\d+)\.\s/);
+    if (numbered) criteria.push({ number: Number(numbered[1]), file, line: index + 1 });
+  });
+  return criteria;
+}
+
+function lint(args) {
+  const { flags, positional } = parseFlags(args, ['criteria', 'root']);
+  const [file] = positional;
+  if (!file || !existsSync(file)) fail('gsd lint: give the brief.md or plan.md to check. Fix: gsd lint <file> [--criteria <spec.md>] [--root <checkout>].');
+  const root = flags.root ?? repoRoot();
+  const deprecated = readConfig(root)?.values.deprecated ?? [];
+  const lines = readFileSync(file, 'utf8').split(/\r?\n/);
+  const problems = [];
+  const report = (where, line, rule, problem, fix) => problems.push(`${where}:${line} ${rule}: ${problem}. Fix: ${fix}.`);
+  const here = (line, ...rest) => report(file, line, ...rest);
+
+  lines.forEach((line, index) => {
+    if (line.replace(/`[^`]*`/g, '').includes('[NEEDS CLARIFICATION')) here(index + 1, 'needs-clarification', 'an open question is still in the document', 'ask the user, record the answer under Decisions and delete the marker');
+  });
+
+  const cards = readCards(lines);
+  if (cards.length === 0) here(1, 'no-cards', 'the document has no task card', 'end it with a "## Tasks" section holding one "### T<n>" card per slice');
+
+  const covered = new Map();
+  const created = new Set();
+  const exists = (path) => created.has(path) || existsSync(join(root, path));
+  for (const card of cards) {
+    if (!LEVELS.includes(card.level)) here(card.line, 'card-level', `${card.id} has level "${card.level ?? ''}"`, `write "level: ${LEVELS.join(' | ')}" on the card's heading line`);
+    for (const name of CARD_FIELDS) {
+      if (!card.fields[name]) here(card.line, 'card-field-missing', `${card.id} has no "${name}:" line`, `add it; a card must stand on its own, so write "${name}: none" only when that is true`);
+    }
+    const { Files: files, Pattern: pattern, Covers: covers } = card.fields;
+    for (const entry of files ? files.value.split(/[,;]/).map(unquote).filter(Boolean) : []) {
+      const marked = entry.match(/^(.+?)\s*\((new|modify)\)$/);
+      if (!marked) here(files.line, 'files-marker', `${card.id} lists "${entry}" without saying whether it exists`, 'write the path followed by (new) or (modify)');
+      else if (marked[2] === 'modify' && !exists(marked[1])) here(files.line, 'path-missing', `${card.id} modifies ${marked[1]}, which does not exist`, 'correct the path, or mark it (new)');
+      else if (marked[2] === 'new') created.add(marked[1]);
+    }
+    for (const entry of pattern && !/^none\b/i.test(pattern.value) ? pattern.value.split(/[,;]/).map(unquote).filter(Boolean) : []) {
+      const [, path, lineNumber] = entry.match(/^(\S+?)(?::(\d+))?(?:\s.*)?$/);
+      const target = join(root, path);
+      if (!exists(path)) here(pattern.line, 'pattern-missing', `${card.id} copies ${path}, which does not exist`, 'point at real code to copy, or write "none: <reason>"');
+      else if (lineNumber && existsSync(target) && Number(lineNumber) > readFileSync(target, 'utf8').split('\n').length) here(pattern.line, 'pattern-missing', `${card.id} copies ${path}:${lineNumber}, past the end of the file`, 'correct the line number');
+      else if (matchesAny(path, deprecated)) here(pattern.line, 'pattern-deprecated', `${card.id} copies ${path}, which the project guide lists as deprecated`, 'copy a current example of the same thing, or ask the user what replaces it');
+    }
+    for (const number of covers?.value.match(/\d+/g) ?? []) covered.set(Number(number), { card, line: covers.line });
+  }
+
+  const sources = [file, flags.criteria, join(dirname(file), 'spec.md')].filter(Boolean);
+  const criteria = sources.map(readCriteria).find((found) => found.length > 0) ?? [];
+  if (criteria.length === 0) here(1, 'no-criteria', 'no numbered acceptance criteria were found', 'add a "## Acceptance criteria" section, or pass --criteria <spec.md>');
+  else {
+    const numbers = criteria.map((criterion) => criterion.number);
+    for (const criterion of criteria) {
+      if (!covered.has(criterion.number)) report(criterion.file, criterion.line, 'criterion-uncovered', `no card covers criterion ${criterion.number}`, `add ${criterion.number} to the "Covers:" line of the card whose test proves it, or add a card`);
+    }
+    for (const [number, { card, line }] of covered) {
+      if (!numbers.includes(number)) here(line, 'covers-unknown', `${card.id} covers criterion ${number}, which does not exist`, 'use the numbers from the acceptance criteria');
+    }
+  }
+
+  if (problems.length === 0) {
+    process.stdout.write(`lint: ok (${cards.length} cards, ${criteria.length} criteria)\n`);
+    return 0;
+  }
+  process.stdout.write(`${problems.join('\n')}\nlint: ${problems.length} problems\n`);
+  return 1;
+}
+
+const COMMANDS = { log, config, lint };
 
 function main(argv) {
   const [name, ...args] = argv;

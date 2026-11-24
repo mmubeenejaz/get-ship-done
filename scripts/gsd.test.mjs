@@ -134,3 +134,94 @@ test('config without a section exits 1 naming setup', () => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /\/get-ship-done:setup/);
 });
+
+const CRITERIA = ['## Acceptance criteria', '', '1. First thing.', '2. Second thing.', ''];
+const CARD = [
+  '## Tasks',
+  '',
+  '### T1  Do the first thing        level: standard   after: none',
+  'Files:      src/a.js (modify), src/b.js (new)',
+  'Pattern:    src/a.js:1 (the existing handler)',
+  'Interface:  none',
+  'Covers:     1, 2',
+  'Test first: a.test.js "does it"; given x, when y, expect z',
+  'Done when:  npm test -> pass',
+  "Don't:      touch c",
+  'Stop if:    none',
+  '',
+];
+const BRIEF = ['# Title', '', 'The `[NEEDS CLARIFICATION` rule is described here, not used.', '', ...CRITERIA, ...CARD].join('\n');
+
+function lintProject() {
+  return project({
+    'src/a.js': 'export const a = 1;\n',
+    'src/legacy/old.js': 'export const old = 1;\n',
+    'AGENTS.md': '## Get Ship Done\n\n- deprecated: `src/legacy/**`\n',
+  });
+}
+
+function lint(document, extraArgs = []) {
+  const cwd = lintProject();
+  const dir = freshDir('run');
+  writeFileSync(join(dir, 'brief.md'), document);
+  return gsd(['lint', join(dir, 'brief.md'), ...extraArgs], { cwd });
+}
+
+test('lint passes a valid brief', () => {
+  const result = lint(BRIEF);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /lint: ok/);
+});
+
+const LINT_CASES = [
+  ['an open clarification marker', (doc) => `${doc}\n[NEEDS CLARIFICATION: which one?]\n`, /brief\.md:\d+ needs-clarification: /],
+  ['a document without cards', (doc) => doc.slice(0, doc.indexOf('### T1')), /no-cards: /],
+  ['a card missing a field', (doc) => doc.replace(/^Stop if:.*\n/m, ''), /brief\.md:\d+ card-field-missing: .*Stop if/],
+  ['an invalid level', (doc) => doc.replace('level: standard', 'level: easy'), /brief\.md:\d+ card-level: /],
+  ['a Files entry without a marker', (doc) => doc.replace('src/b.js (new)', 'src/b.js'), /brief\.md:\d+ files-marker: /],
+  ['a modify path that does not exist', (doc) => doc.replace('src/a.js (modify)', 'src/zzz.js (modify)'), /brief\.md:\d+ path-missing: .*src\/zzz\.js/],
+  ['a Pattern path that does not exist', (doc) => doc.replace('src/a.js:1 (the', 'src/nope.js:1 (the'), /brief\.md:\d+ pattern-missing: .*src\/nope\.js/],
+  ['a Pattern line past the end of the file', (doc) => doc.replace('src/a.js:1 (the', 'src/a.js:99 (the'), /brief\.md:\d+ pattern-missing: /],
+  ['a deprecated Pattern', (doc) => doc.replace('src/a.js:1 (the', 'src/legacy/old.js:1 (the'), /brief\.md:\d+ pattern-deprecated: /],
+  ['an uncovered criterion', (doc) => doc.replace('Covers:     1, 2', 'Covers:     1'), /brief\.md:\d+ criterion-uncovered: .*criterion 2/],
+  ['a Covers number with no criterion', (doc) => doc.replace('Covers:     1, 2', 'Covers:     1, 2, 7'), /brief\.md:\d+ covers-unknown: .*7/],
+];
+
+for (const [name, mutate, expected] of LINT_CASES) {
+  test(`lint fails on ${name} and names the fix`, () => {
+    const result = lint(mutate(BRIEF));
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stdout, expected);
+    assert.match(result.stdout, / Fix: /);
+  });
+}
+
+test('lint accepts a Pattern of none with a reason', () => {
+  assert.equal(lint(BRIEF.replace('src/a.js:1 (the existing handler)', 'none: first file of its kind')).status, 0);
+});
+
+test('lint takes a plan\'s criteria from the sibling spec.md', () => {
+  const cwd = lintProject();
+  const dir = freshDir('run');
+  writeFileSync(join(dir, 'spec.md'), ['# Spec', '', ...CRITERIA, '3. Third thing.', ''].join('\n'));
+  writeFileSync(join(dir, 'plan.md'), ['# Plan', '', ...CARD].join('\n'));
+  const result = gsd(['lint', join(dir, 'plan.md')], { cwd });
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stdout, /spec\.md:\d+ criterion-uncovered: .*criterion 3/);
+});
+
+test('lint fails when it cannot find any criteria', () => {
+  const result = lint(['# Plan', '', ...CARD].join('\n'));
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /no-criteria: .* Fix: /);
+});
+
+test('lint lets a later card modify or copy a file an earlier card creates', () => {
+  const second = CARD.slice(2)
+    .join('\n')
+    .replace('### T1', '### T2')
+    .replace('src/a.js (modify), src/b.js (new)', 'src/b.js (modify)')
+    .replace('src/a.js:1 (the existing handler)', 'src/b.js:1');
+  const result = lint(`${BRIEF}\n${second}\n`);
+  assert.equal(result.status, 0, result.stdout);
+});
