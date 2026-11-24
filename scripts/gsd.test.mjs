@@ -244,12 +244,13 @@ const LATER = hiddenFromOwnDiffCheck('TO', 'DO');
 const LONG_DOC = Array.from({ length: 40 }, (_, i) => `Line ${i + 1} of the guide.`).join('\n') + '\n';
 const DOCS_GUIDE = '## Get Ship Done\n\n- docs: `docs/modules/**`\n';
 
-function branch(changes, { guide, remove = [], rename } = {}) {
+function branch(changes, { guide, remove = [], rename, base = {} } = {}) {
   const cwd = project({
     'src/a.js': 'export const a = 1;\n',
     'src/a.test.js': 'test("a", () => {});\n',
     'docs/guide.md': LONG_DOC,
     ...(guide ? { 'AGENTS.md': guide } : {}),
+    ...base,
   });
   git(cwd, 'switch', '-q', '-c', 'work');
   for (const [path, content] of Object.entries(changes)) write(cwd, path, content);
@@ -296,6 +297,7 @@ const REVIEW_CASES = [
   ['a plain why-comment', { 'src/a.js': `${SLASHES} The vendor API returns seconds, not milliseconds.\nexport const a = 1;\n` }, {}, /^review\s+src\/a\.js:1 comment-added: /m],
   ['a new Markdown file when the guide has no docs key', { 'docs/feature-x.md': '# X\n' }, {}, /^review\s+docs\/feature-x\.md doc-added: /m],
   ['a rewritten Markdown file', { 'docs/guide.md': 'All new.\n' }, {}, /^review\s+docs\/guide\.md doc-rewritten: /m],
+  ['an unchanged comment next to changed code', { 'src/b.js': `${SLASHES} Returns the total in cents.\nexport const total = 2;\n` }, { base: { 'src/b.js': `${SLASHES} Returns the total in cents.\nexport const total = 1;\n` } }, /^review\s+src\/b\.js:1 comment-near-change: /m],
 ];
 
 for (const [name, changes, options, expected] of REVIEW_CASES) {
@@ -305,6 +307,14 @@ for (const [name, changes, options, expected] of REVIEW_CASES) {
     assert.match(result.stdout, expected);
   });
 }
+
+const FAR_FILE = (value) => `${SLASHES} Returns the total in cents.\n${'export const filler = 0;\n'.repeat(8)}export const total = ${value};\n`;
+
+test('diff-check leaves a comment far from changed code alone', () => {
+  const result = diffCheck(branch({ 'src/b.js': FAR_FILE(2) }, { base: { 'src/b.js': FAR_FILE(1) } }));
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stdout, /comment-near-change/);
+});
 
 const SLOP_CASES = [
   ['ui-gradient', 'src/Hero.tsx', '<div className="bg-gradient-to-r from-purple-500 to-blue-500" />'],

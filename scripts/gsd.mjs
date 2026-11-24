@@ -355,12 +355,14 @@ function readDiff(args) {
   return output;
 }
 
-function addedLines(range) {
-  const added = [];
+const NEAR_CHANGE_LINES = 2;
+
+function hunkLines(range) {
+  const lines = [];
   let path = null;
   let lineNumber = 0;
   let inHeader = false;
-  for (const line of readDiff(['--unified=0', '--no-color', '-M', range]).split('\n')) {
+  for (const line of readDiff([`--unified=${NEAR_CHANGE_LINES}`, '--no-color', '-M', range]).split('\n')) {
     if (line.startsWith('diff --git ')) {
       inHeader = true;
       path = null;
@@ -368,9 +370,9 @@ function addedLines(range) {
     else if (line.startsWith('@@')) {
       inHeader = false;
       lineNumber = Number(line.match(/\+(\d+)/)[1]);
-    } else if (!inHeader && line.startsWith('+') && path) added.push({ path, line: lineNumber++, text: line.slice(1) });
+    } else if (!inHeader && path && (line.startsWith('+') || line.startsWith(' '))) lines.push({ added: line.startsWith('+'), path, line: lineNumber++, text: line.slice(1) });
   }
-  return added;
+  return lines;
 }
 
 function branchRange(args) {
@@ -411,8 +413,12 @@ function diffCheck(args) {
     if (before >= REWRITE_MIN_LINES && Number(removed) * 2 >= before) note(path, 'doc-rewritten', `${removed} of about ${before} lines are replaced`, 'edit only the sections this change makes untrue');
   }
 
-  for (const { path, line, text } of addedLines(range)) {
+  for (const { added, path, line, text } of hunkLines(range)) {
     const where = `${path}:${line}`;
+    if (!added) {
+      if (commentText(path, text) !== null) note(where, 'comment-near-change', 'an unchanged comment sits next to changed code', 'update it if the change makes it untrue, remove it if it no longer meets Comments, otherwise leave it');
+      continue;
+    }
     if (UI_FILE.test(path) && !isTest(path)) for (const { rule, problem, fix } of slopFindings(text)) note(where, rule, problem, fix);
     if (isTest(path) && SKIPPED_TEST.test(text)) block(where, 'test-skipped', 'a test is skipped', 'make it pass; if the test itself is wrong, say why in the PR and ask the user');
     if (isTest(path) && FOCUSED_TEST.test(text)) block(where, 'test-focused', 'a focused test stops the rest of the file from running', 'remove the focus before committing');
@@ -423,7 +429,7 @@ function diffCheck(args) {
     const comment = commentText(path, text);
     if (comment === null) continue;
     if (WORKAROUND.test(comment)) block(where, 'workaround-comment', 'a comment defers or defends a workaround', 'fix the cause now, or stop and report it; encode a "do not remove" claim as a type, test or lint');
-    else note(where, 'comment-added', 'a new comment', 'keep it only for a license header, a public API doc, behavior forced by an external system, or a link for a constraint code cannot express; otherwise rename or restructure so the code says it');
+    else note(where, 'comment-added', 'a new comment', 'keep it only for a license header, a public API doc, behavior forced by an external system, a link for a constraint code cannot express, or why a non-obvious choice was made; log what you keep and why; otherwise rename or restructure so the code says it');
   }
 
   process.stdout.write([...blocking, ...capped(review, REVIEW_LIMIT),`diff-check: ${blocking.length} blocking, ${review.length} review`].join('\n') + '\n');

@@ -60,7 +60,7 @@ Rules a machine can decide are checked by `scripts/gsd.mjs`, and every error nam
 |---|---|
 | `gsd log` | a run log line has its phase's required keys; writes `log.md` and a per-repo `history.log` |
 | `gsd lint <brief or plan>` | cards are complete, paths and patterns exist, no pattern is deprecated, every acceptance criterion is covered, no question is open |
-| `gsd diff-check --base <ref>` | no skipped, focused or deleted test; no new suppression or workaround comment; no planning file, stray file or Markdown outside the living docs. Other new comments and docs, and generic UI tokens on new UI lines, are listed for review |
+| `gsd diff-check --base <ref>` | no skipped, focused or deleted test; no new suppression or workaround comment; no planning file, stray file or Markdown outside the living docs. Other new comments and docs, unchanged comments next to changed code, and generic UI tokens on new UI lines, are listed for review |
 | `gsd features --base <ref>` | prints the features a branch touches and their specs, from the project's feature map; lists source files no feature claims |
 | `gsd ui-audit [path ...]` | lists generic UI tokens (decorative gradients, glass, emoji, one-off values, removed focus rings, hype copy) in tracked screens, with a tally per rule, as the audit before an unslop |
 | `gsd config` | prints the project section as JSON |
