@@ -34,6 +34,7 @@ export const LEVELS = ['mechanical', 'standard', 'judgment'];
 const PASS_FAIL = ['pass', 'fail'];
 const DIGITS = { test: (value) => /^\d+$/.test(value), hint: 'a number' };
 const ANY = { test: (value) => value.length > 0, hint: 'a value' };
+const KEBAB = { test: (value) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value), hint: 'kebab-case words' };
 const oneOf = (values) => ({ test: (value) => values.includes(value), hint: values.join('|') });
 
 export const PHASES = {
@@ -49,6 +50,8 @@ export const PHASES = {
   gate: {},
   'self-review': {},
   review: {},
+  keep: { result: oneOf(['ok']), keys: { at: ANY, rule: KEBAB, why: KEBAB } },
+  accept: { result: oneOf(['ok']), keys: { at: ANY, rule: KEBAB, by: oneOf(['user']) } },
   ship: { keys: { pr: DIGITS, 'gate-first-pass': oneOf(PASS_FAIL), 'diff-check': oneOf(['pass', 'accepted']) } },
   handoff: {},
   outcome: { result: oneOf(['merged', 'closed', 'reverted']), keys: { pr: DIGITS } },
@@ -80,14 +83,65 @@ function readEntry(phase, rest) {
   return { result, given };
 }
 
+function parseLine([date, phase, ...rest]) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date ?? '')) return null;
+  try {
+    return { phase, ...readEntry(phase, rest) };
+  } catch (error) {
+    if (!(error instanceof Fail)) throw error;
+    return null;
+  }
+}
+
+const runDir = (slug) => join(home(), repoName(), slug);
+
+function runEntries(slug) {
+  const file = join(runDir(slug), 'log.md');
+  if (!existsSync(file)) return [];
+  return readFileSync(file, 'utf8').split(/\r?\n/).map((line) => parseLine(line.split(' '))).filter(Boolean);
+}
+
 function log([slug, phase, ...rest]) {
   if (!slug || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) fail('gsd log: the first argument is the run slug in kebab-case. Fix: gsd log <slug> <phase> <result> [key=value ...].');
-  readEntry(phase, rest);
+  const { given } = readEntry(phase, rest);
+  if (phase === 'ship') verifyShip(slug, given);
   const line = [today(), phase, ...rest].join(' ');
-  const repoDir = join(home(), repoName());
-  mkdirSync(join(repoDir, slug), { recursive: true });
-  appendFileSync(join(repoDir, slug, 'log.md'), `${line}\n`);
-  appendFileSync(join(repoDir, 'history.log'), `${slug} ${line}\n`);
+  mkdirSync(runDir(slug), { recursive: true });
+  appendFileSync(join(runDir(slug), 'log.md'), `${line}\n`);
+  appendFileSync(join(dirname(runDir(slug)), 'history.log'), `${slug} ${line}\n`);
+}
+
+const isCommit = (ref) => git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]) !== null;
+const atOf = (where) => where.replace(/\s/g, '%20');
+const findingLine = (kind, { where, rule, text }) => `${kind} ${where} ${rule}: ${text}`;
+
+function verifyShip(slug, given) {
+  const entries = runEntries(slug);
+  const intake = entries.findLast((entry) => entry.phase === 'intake');
+  if (!intake) fail(`gsd log: ship refused, run ${slug} has no intake line, so there is no base to check against. Fix: gsd log ${slug} intake ok lane=<lane> base=<branch>@<sha>, then log ship again.`);
+  const [ref, sha] = intake.given.base.split('@');
+  const base = [`origin/${ref}`, ref, sha].find((candidate) => candidate && isCommit(candidate));
+  if (!base) fail(`gsd log: ship refused, the intake base "${intake.given.base}" is not a commit git knows. Fix: git fetch, or log a new intake line whose base=<branch>@<sha> resolves.`);
+  const problems = diffProblems(slug, base, given, entries);
+  if (problems.length > 0) fail(['gsd log: ship refused, nothing was written. Fix each problem, then log ship again:', ...capped(problems, REVIEW_LIMIT)].join('\n'));
+}
+
+function diffProblems(slug, base, given, entries) {
+  const { blocking, review } = diffFindings(base);
+  const logged = (phase) => entries.filter((entry) => entry.phase === phase);
+  const [kept, accepted] = [logged('keep'), logged('accept')];
+  const named = (lines, finding) => lines.some(({ given: line }) => line.at === atOf(finding.where) && line.rule === finding.rule);
+  const unaccepted = blocking.filter((finding) => !named(accepted, finding));
+  const problems = [];
+  if (given['diff-check'] === 'accepted' && blocking.length === 0) problems.push('diff-check=accepted but nothing blocks. Fix: log the ship line with diff-check=pass.');
+  if (given['diff-check'] === 'pass' && blocking.length > 0 && unaccepted.length === 0) problems.push(`diff-check=pass but ${blocking.length} findings block, each accepted by the user. Fix: log the ship line with diff-check=accepted.`);
+  for (const finding of unaccepted) {
+    problems.push(`${findingLine('block ', finding)}\n  Only on the user's yes: gsd log ${slug} accept ok at=${atOf(finding.where)} rule=${finding.rule} by=user, then ship with diff-check=accepted.`);
+  }
+  for (const finding of review.filter((item) => !named(kept, item))) {
+    problems.push(`${findingLine('review', finding)}\n  Or keep it: gsd log ${slug} keep ok at=${atOf(finding.where)} rule=${finding.rule} why=<kebab-case-reason>.`);
+  }
+  return problems;
 }
 
 function parseFlags(args, names) {
@@ -378,18 +432,18 @@ function hunkLines(range) {
 function branchRange(args) {
   const { flags } = parseFlags(args, ['base']);
   const base = flags.base;
-  if (!base || git(['rev-parse', '--verify', '--quiet', `${base}^{commit}`]) === null) fail(`gsd: "${base ?? ''}" is not a known base ref. Fix: git fetch, then pass --base origin/<base branch>.`);
+  if (!base || !isCommit(base)) fail(`gsd: "${base ?? ''}" is not a known base ref. Fix: git fetch, then pass --base origin/<base branch>.`);
   return { base, range: `${base}...HEAD` };
 }
 
-function diffCheck(args) {
-  const { base, range } = branchRange(args);
+function diffFindings(base) {
+  const range = `${base}...HEAD`;
   const settings = readConfig(repoRoot())?.values ?? {};
   const isTest = testFileMatcher(settings);
   const blocking = [];
   const review = [];
-  const block = (where, rule, problem, fix) => blocking.push(`block  ${where} ${rule}: ${problem}. Fix: ${fix}.`);
-  const note = (where, rule, problem, fix) => review.push(`review ${where} ${rule}: ${problem}. Fix: ${fix}.`);
+  const block = (where, rule, problem, fix) => blocking.push({ where, rule, text: `${problem}. Fix: ${fix}.` });
+  const note = (where, rule, problem, fix) => review.push({ where, rule, text: `${problem}. Fix: ${fix}.` });
 
   for (const entry of readDiff(['--name-status', '-M', range]).split('\n').filter(Boolean)) {
     const [status, ...paths] = entry.split('\t');
@@ -431,8 +485,13 @@ function diffCheck(args) {
     if (WORKAROUND.test(comment)) block(where, 'workaround-comment', 'a comment defers or defends a workaround', 'fix the cause now, or stop and report it; encode a "do not remove" claim as a type, test or lint');
     else note(where, 'comment-added', 'a new comment', 'keep it only for a license header, a public API doc, behavior forced by an external system, a link for a constraint code cannot express, or why a non-obvious choice was made; log what you keep and why; otherwise rename or restructure so the code says it');
   }
+  return { blocking, review };
+}
 
-  process.stdout.write([...blocking, ...capped(review, REVIEW_LIMIT),`diff-check: ${blocking.length} blocking, ${review.length} review`].join('\n') + '\n');
+function diffCheck(args) {
+  const { blocking, review } = diffFindings(branchRange(args).base);
+  const lines = [...blocking.map((finding) => findingLine('block ', finding)), ...capped(review.map((finding) => findingLine('review', finding)), REVIEW_LIMIT)];
+  process.stdout.write([...lines, `diff-check: ${blocking.length} blocking, ${review.length} review`].join('\n') + '\n');
   return blocking.length > 0 ? 1 : 0;
 }
 
@@ -449,16 +508,12 @@ function stats([repo = repoName()]) {
   const gate = { pass: 0, total: 0, accepted: 0 };
   let unparsed = 0;
   for (const line of readFileSync(historyFile, 'utf8').split(/\r?\n/).filter(Boolean)) {
-    const [, date, phase, ...rest] = line.split(' ');
-    let entry;
-    try {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date ?? '')) fail('no date');
-      entry = readEntry(phase, rest);
-    } catch (error) {
-      if (!(error instanceof Fail)) throw error;
+    const entry = parseLine(line.split(' ').slice(1));
+    if (!entry) {
       unparsed++;
       continue;
     }
+    const { phase } = entry;
     if (phase === 'intake') tally(lanes, entry.given.lane);
     if (phase === 'outcome') tally(outcomes, entry.result);
     if (phase === 'card') {

@@ -53,12 +53,12 @@ function project(files = { 'README.md': 'base\n' }) {
   return root;
 }
 
-function gsd(args, { cwd, home, input } = {}) {
+function gsd(args, { cwd, home, input, env } = {}) {
   const result = spawnSync(process.execPath, [GSD, ...args], {
     cwd: cwd ?? SANDBOX,
     encoding: 'utf8',
     input,
-    env: { ...process.env, ...GIT_IDENTITY, GSD_HOME: home ?? freshDir('home') },
+    env: { ...process.env, ...GIT_IDENTITY, GSD_HOME: home ?? freshDir('home'), ...env },
   });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
@@ -565,6 +565,89 @@ test('stats uses the current repo and names the fix when there is no history', (
   assert.match(result.stderr, /proj.* Fix: /);
 });
 
+const FAKE_GH = join(SANDBOX, 'fake-gh.mjs');
+writeFileSync(
+  FAKE_GH,
+  [
+    "import { readFileSync } from 'node:fs';",
+    "const answers = JSON.parse(readFileSync(process.env.FAKE_GH_ANSWERS, 'utf8'));",
+    "const answer = answers[process.argv.slice(2, 4).join(' ')];",
+    'if (answer === undefined) process.exit(1);',
+    'process.stdout.write(JSON.stringify(answer));',
+  ].join('\n'),
+);
+
+function shipRun(changes = {}, { lane = 'Direct', lines = [], gh = () => ({}), files = {}, guide } = {}) {
+  const cwd = branch(changes, { guide });
+  const home = freshDir('home');
+  const head = git(cwd, 'rev-parse', 'HEAD');
+  const runDir = join(home, 'proj', 's');
+  for (const [name, content] of Object.entries(files)) write(runDir, name, content);
+  write(runDir, 'log.md', [`2026-11-01 intake ok lane=${lane} base=main@${git(cwd, 'rev-parse', 'main')}`, ...lines, ''].join('\n'));
+  const answers = join(freshDir('gh'), 'answers.json');
+  writeFileSync(answers, JSON.stringify({ 'pr view': { state: 'OPEN', headRefOid: head, headRefName: 'work' }, 'run list': [], ...gh(head) }));
+  const env = { GSD_GH: FAKE_GH, FAKE_GH_ANSWERS: answers };
+  const ship = ({ gate = 'pass', diff = 'pass' } = {}) => gsd(['log', 's', 'ship', 'done', 'pr=5', `gate-first-pass=${gate}`, `diff-check=${diff}`], { cwd, home, env });
+  return { cwd, home, head, env, ship, log: () => readFileSync(join(runDir, 'log.md'), 'utf8') };
+}
+
+const WHY_COMMENT = `${SLASHES} The vendor API returns seconds, not milliseconds.\nexport const a = 1;\n`;
+
+function assertRefused(run, result, expected) {
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, expected);
+  assert.doesNotMatch(run.log(), / ship /);
+  assert.equal(existsSync(join(run.home, 'proj', 'history.log')), false);
+}
+
+test('ship logs a clean branch', () => {
+  const run = shipRun({ 'src/a.js': 'export const a = 2;\n' });
+  const result = run.ship();
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(run.log(), / ship done pr=5 gate-first-pass=pass diff-check=pass\n$/);
+});
+
+test('ship refuses pass while diff-check blocks', () => {
+  const run = shipRun({ 'src/a.test.js': SKIP_CALL });
+  assertRefused(run, run.ship(), /^block\s+src\/a\.test\.js:1 test-skipped: .* Fix: /m);
+});
+
+test('ship refuses a review finding without a keep line and prints the command to keep it', () => {
+  const run = shipRun({ 'src/a.js': WHY_COMMENT });
+  assertRefused(run, run.ship(), /^review src\/a\.js:1 comment-added: [\s\S]*gsd log s keep ok at=src\/a\.js:1 rule=comment-added why=</m);
+});
+
+test('ship takes a review finding once a keep line names it', () => {
+  const run = shipRun({ 'src/a.js': WHY_COMMENT }, { lines: ['2026-11-01 keep ok at=src/a.js:1 rule=comment-added why=external-api-units'] });
+  assert.equal(run.ship().status, 0);
+});
+
+test('ship refuses a keep line for another place or rule', () => {
+  const run = shipRun({ 'src/a.js': WHY_COMMENT }, { lines: ['2026-11-01 keep ok at=src/a.js:2 rule=comment-added why=moved', '2026-11-01 keep ok at=src/a.js:1 rule=doc-added why=wrong-rule'] });
+  assertRefused(run, run.ship(), /keep ok at=src\/a\.js:1 rule=comment-added/);
+});
+
+test('ship refuses diff-check=accepted while a blocking finding has no accept line', () => {
+  const run = shipRun({ 'src/a.test.js': SKIP_CALL });
+  assertRefused(run, run.ship({ diff: 'accepted' }), /gsd log s accept ok at=src\/a\.test\.js:1 rule=test-skipped by=user/);
+});
+
+test('ship takes diff-check=accepted once the user accepted each blocking finding', () => {
+  const run = shipRun({ 'src/a.test.js': SKIP_CALL }, { lines: ['2026-11-01 accept ok at=src/a.test.js:1 rule=test-skipped by=user'] });
+  assert.equal(run.ship({ diff: 'accepted' }).status, 0);
+});
+
+test('ship refuses diff-check=accepted when nothing blocks', () => {
+  const run = shipRun({ 'src/a.js': 'export const a = 2;\n' });
+  assertRefused(run, run.ship({ diff: 'accepted' }), /nothing blocks.* Fix: .*diff-check=pass/);
+});
+
+test('ship refuses a run without an intake line', () => {
+  const run = shipRun({ 'src/a.js': 'export const a = 2;\n' });
+  writeFileSync(join(run.home, 'proj', 's', 'log.md'), '');
+  assertRefused(run, run.ship(), /intake.* Fix: /);
+});
+
 const GSD_CALL = 'node "/plugins/get-ship-done/scripts/gsd.mjs" log s note started';
 
 function guard(command, { home, cwd, session = 'session-1', tool = 'Bash' }) {
@@ -750,6 +833,9 @@ const REJECTED_LOG_LINES = [
   [['outcome', 'merged'], /missing pr/],
   [['outcome', 'landed', 'pr=5'], /result "landed".*merged\|closed\|reverted/],
   [['gate', 'two words'], /result/],
+  [['keep', 'ok', 'at=src/a.js:1', 'rule=comment-added', 'why=Because'], /why=Because.*kebab/],
+  [['keep', 'ok', 'at=src/a.js:1', 'rule=comment-added'], /missing why/],
+  [['accept', 'ok', 'at=src/a.js:1', 'rule=test-skipped', 'by=agent'], /by=agent.*user/],
   [['note', 'line one\nline two'], /one line/],
   [['note'], /needs text/],
 ];
