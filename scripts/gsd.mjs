@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -393,7 +393,69 @@ function stats([repo = repoName()]) {
   );
 }
 
-const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats };
+const SAME_COMMAND = '[^\\n;&|]*';
+const RUN_COMMAND = /gsd\.mjs["']?\s+(?:log|lint|diff-check|config|stats|features)\b/;
+const MERGE = new RegExp(`\\bgh\\s+pr\\s+merge\\b|\\bgh\\s+api\\b${SAME_COMMAND}/merge\\b`);
+const READY = new RegExp(`\\bgh\\s+pr\\s+ready\\b(?!${SAME_COMMAND}--undo)`);
+const NO_VERIFY = new RegExp(`\\bgit\\b${SAME_COMMAND}\\s--no-verify\\b`);
+const PUSH = /\bgit(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+push\b([^\n;&|]*)/g;
+const MARKER_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+function pushesToBase(command, cwd) {
+  const pushes = [...command.matchAll(PUSH)];
+  if (pushes.length === 0) return false;
+  const remoteHead = git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], cwd)?.trim();
+  const bases = remoteHead ? [remoteHead.replace(/^[^/]+\//, '')] : ['main', 'master'];
+  const current = git(['rev-parse', '--abbrev-ref', 'HEAD'], cwd)?.trim();
+  return pushes.some(([, tail]) => {
+    const [, ...refspecs] = tail.split(/\s+/).filter((word) => word && !word.startsWith('-'));
+    if (refspecs.length === 0) return bases.includes(current);
+    return refspecs.some((refspec) => {
+      const target = refspec.replace(/["']/g, '').split(':').pop().replace(/^\+/, '').replace(/^refs\/heads\//, '');
+      return bases.includes(target === 'HEAD' ? current : target);
+    });
+  });
+}
+
+const usersDecision = (action) => `Get Ship Done hard limit: ${action} is the user's decision. Approve only if you asked for it in this conversation.`;
+
+function decide(command, cwd) {
+  if (NO_VERIFY.test(command)) return ['deny', "Get Ship Done hard limit: --no-verify skips the project's hooks. Fix: make the hook pass, or report the failing hook to the user."];
+  if (MERGE.test(command)) return ['ask', usersDecision('merging a pull request')];
+  if (READY.test(command)) return ['ask', usersDecision('marking a pull request ready')];
+  if (pushesToBase(command, cwd)) return ['ask', usersDecision('pushing to the base branch')];
+  return null;
+}
+
+function markSession(marker) {
+  const sessions = dirname(marker);
+  mkdirSync(sessions, { recursive: true });
+  for (const name of readdirSync(sessions)) {
+    const file = join(sessions, name);
+    if (Date.now() - statSync(file).mtimeMs > MARKER_MAX_AGE_MS) rmSync(file, { force: true });
+  }
+  writeFileSync(marker, '');
+}
+
+function guard() {
+  try {
+    const input = JSON.parse(readFileSync(0, 'utf8'));
+    const command = input.tool_input?.command;
+    if (typeof command !== 'string' || typeof input.session_id !== 'string') return 0;
+    const marker = join(home(), '.sessions', input.session_id.replace(/[^\w.-]/g, '_'));
+    if (RUN_COMMAND.test(command)) markSession(marker);
+    if (!existsSync(marker)) return 0;
+    const decision = decide(command, input.cwd ?? process.cwd());
+    if (!decision) return 0;
+    const [permissionDecision, permissionDecisionReason] = decision;
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision, permissionDecisionReason } }));
+  } catch (error) {
+    process.stderr.write(`gsd guard: let the command through after an error: ${error.message}\n`);
+  }
+  return 0;
+}
+
+const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard };
 
 function main(argv) {
   const [name, ...args] = argv;

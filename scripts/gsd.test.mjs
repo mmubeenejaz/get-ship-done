@@ -351,3 +351,102 @@ test('stats uses the current repo and names the fix when there is no history', (
   assert.equal(result.status, 1);
   assert.match(result.stderr, /proj.* Fix: /);
 });
+
+const GSD_CALL = 'node "/plugins/get-ship-done/scripts/gsd.mjs" log s note started';
+
+function guard(command, { home, cwd, session = 'session-1', tool = 'Bash' }) {
+  const input = JSON.stringify({ session_id: session, cwd, hook_event_name: 'PreToolUse', tool_name: tool, tool_input: { command } });
+  const result = gsd(['guard'], { home, cwd, input });
+  return { ...result, decision: result.stdout ? JSON.parse(result.stdout).hookSpecificOutput : null };
+}
+
+function runSession({ branch: branchName } = {}) {
+  const home = freshDir('home');
+  const cwd = project();
+  if (branchName) git(cwd, 'switch', '-q', '-c', branchName);
+  guard(GSD_CALL, { home, cwd });
+  return { home, cwd };
+}
+
+test('guard is silent in a session that never ran gsd', () => {
+  const result = guard('gh pr merge 5', { home: freshDir('home'), cwd: project() });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, '');
+});
+
+test('guard applies only to the session that ran gsd', () => {
+  const run = runSession();
+  assert.equal(guard('gh pr merge 5', run).decision.permissionDecision, 'ask');
+  assert.equal(guard('gh pr merge 5', { ...run, session: 'session-2' }).stdout, '');
+});
+
+test('guard marks the session and checks the rest of the same command', () => {
+  const result = guard(`${GSD_CALL} && gh pr merge 5`, { home: freshDir('home'), cwd: project() });
+  assert.equal(result.decision.permissionDecision, 'ask');
+});
+
+const ASK_COMMANDS = [
+  'gh pr merge 5 --squash',
+  'gh api -X PUT repos/o/r/pulls/5/merge',
+  'gh pr ready 5',
+  'git push origin main',
+  'git push origin HEAD:main',
+  'git push -u origin +work:refs/heads/main',
+  'git -C . push origin main',
+  'git push',
+];
+
+for (const command of ASK_COMMANDS) {
+  test(`guard asks the user before: ${command}`, () => {
+    const { decision } = guard(command, runSession());
+    assert.equal(decision.hookEventName, 'PreToolUse');
+    assert.equal(decision.permissionDecision, 'ask');
+    assert.match(decision.permissionDecisionReason, /Get Ship Done/);
+  });
+}
+
+test('guard asks on the PowerShell tool as well', () => {
+  assert.equal(guard('gh pr merge 5', { ...runSession(), tool: 'PowerShell' }).decision.permissionDecision, 'ask');
+});
+
+const SILENT_COMMANDS = [
+  'git push origin work',
+  'git push -u origin work',
+  'git push origin maintenance',
+  'git push',
+  'gh pr ready 5 --undo',
+  'gh pr view 5',
+  'git stash push -m main',
+  'git commit -m "explain why merges are the user\'s"',
+];
+
+for (const command of SILENT_COMMANDS) {
+  test(`guard stays silent on a feature branch for: ${command}`, () => {
+    const result = guard(command, runSession({ branch: 'work' }));
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout, '');
+  });
+}
+
+test('guard takes the base branch from origin/HEAD when it is set', () => {
+  const run = runSession({ branch: 'work' });
+  git(run.cwd, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/develop');
+  assert.equal(guard('git push origin develop', run).decision.permissionDecision, 'ask');
+  assert.equal(guard('git push origin main', run).stdout, '');
+});
+
+for (const command of ['git commit --no-verify -m x', 'git push --no-verify origin work']) {
+  test(`guard denies: ${command}`, () => {
+    const { decision } = guard(command, runSession({ branch: 'work' }));
+    assert.equal(decision.permissionDecision, 'deny');
+    assert.match(decision.permissionDecisionReason, /Fix: /);
+  });
+}
+
+for (const [name, input] of [['malformed', 'not json'], ['empty', '{}']]) {
+  test(`guard lets the command through on ${name} hook input`, () => {
+    const result = gsd(['guard'], { input });
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout, '');
+  });
+}
