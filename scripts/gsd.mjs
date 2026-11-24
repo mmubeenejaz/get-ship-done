@@ -532,7 +532,7 @@ function importTargets(path, line) {
   if (plain) return [`${plain.replace(/\./g, '/')}/`, `${plain.replace(/\./g, '/')}.py`];
   const anchor = dots ? posix.join(posix.dirname(path), ...Array(dots.length - 1).fill('..')) : '';
   const module = posix.join(anchor || '.', from.replace(/\./g, '/'));
-  return [module, ...names.replace(/[()]/g, '').split(',').map((name) => name.trim().split(/s+/)[0]).filter(Boolean).map((name) => posix.join(module, name))].flatMap((target) => [`${target}/`, `${target}.py`]);
+  return [module, ...names.replace(/[()]/g, '').split(',').map((name) => name.trim().split(/\s+/)[0]).filter(Boolean).map((name) => posix.join(module, name))].flatMap((target) => [`${target}/`, `${target}.py`]);
 }
 
 function diffFindings(base) {
@@ -861,14 +861,14 @@ function coverageFindings(base, settings, file = settings.lcov ?? 'coverage/lcov
   return findings;
 }
 
-const ruleCounts = (findings, rules) => rules.map((rule) => `${findings.filter((finding) => finding.rule === rule).length} ${rule}`).join(', ');
+function printFindings(command, findings, rules) {
+  process.stdout.write([...capped(findings.map((finding) => findingLine('review', finding)), REVIEW_LIMIT), `${command}: ${rules.map((rule) => `${findings.filter((finding) => finding.rule === rule).length} ${rule}`).join(', ')}`].join('\n') + '\n');
+  return 0;
+}
 
 function coverage(args) {
-  const settings = readConfig(repoRoot())?.values ?? {};
   const { base, flags } = branchRange(args, ['lcov']);
-  const findings = coverageFindings(base, settings, flags.lcov);
-  process.stdout.write([...capped(findings.map((finding) => findingLine('review', finding)), REVIEW_LIMIT), `coverage: ${ruleCounts(findings, ['uncovered-line', 'not-in-coverage'])}`].join('\n') + '\n');
-  return 0;
+  return printFindings('coverage', coverageFindings(base, readConfig(repoRoot())?.values ?? {}, flags.lcov), ['uncovered-line', 'not-in-coverage']);
 }
 
 function changed(args) {
@@ -911,11 +911,8 @@ function mutationFindings(base, settings, file = settings['mutation-report'] ?? 
 }
 
 function mutation(args) {
-  const settings = readConfig(repoRoot())?.values ?? {};
   const { base, flags } = branchRange(args, ['report']);
-  const findings = mutationFindings(base, settings, flags.report);
-  process.stdout.write([...capped(findings.map((finding) => findingLine('review', finding)), REVIEW_LIMIT), `mutation: ${ruleCounts(findings, ['survived-mutant'])}`].join('\n') + '\n');
-  return 0;
+  return printFindings('mutation', mutationFindings(base, readConfig(repoRoot())?.values ?? {}, flags.report), ['survived-mutant']);
 }
 
 function deprecatedReport() {

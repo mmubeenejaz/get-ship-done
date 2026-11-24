@@ -320,6 +320,7 @@ const DEPRECATED_IMPORTS = [
   ['a re-export', 'src/e.js', "export * from './legacy/x.js';"],
   ['a Python dotted import', 'app/main.py', 'from app.legacy.old import f'],
   ['a relative Python import', 'app/api/views.py', 'from ..legacy import old'],
+  ['a Python package import with an alias', 'app/main.py', 'from app import legacy as old_code'],
 ];
 
 for (const [name, path, line] of DEPRECATED_IMPORTS) {
