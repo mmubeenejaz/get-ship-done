@@ -53,12 +53,12 @@ function project(files = { 'README.md': 'base\n' }) {
   return root;
 }
 
-function gsd(args, { cwd, home, input } = {}) {
+function gsd(args, { cwd, home, input, env } = {}) {
   const result = spawnSync(process.execPath, [GSD, ...args], {
     cwd: cwd ?? SANDBOX,
     encoding: 'utf8',
     input,
-    env: { ...process.env, ...GIT_IDENTITY, GSD_HOME: home ?? freshDir('home') },
+    env: { ...process.env, ...GIT_IDENTITY, GSD_HOME: home ?? freshDir('home'), ...env },
   });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
@@ -555,14 +555,248 @@ test('stats reports first-pass rates, lanes, outcomes and unparsed lines', () =>
     'gate first-pass: 1/2 (50%)',
     'diff-check accepted: 1/2',
     'outcomes: merged 1, closed 0, reverted 1',
+    'escapes: deploy 0, release 0, post-release 0',
+    'checks added: none',
     'unparsed lines: 2',
   ]);
+});
+
+test('stats counts escapes by layer and lists the checks they added', () => {
+  const home = freshDir('home');
+  write(home, 'proj/history.log', ['a 2026-11-08 escape post-release pr=5 check=null-total-test', 'b 2026-11-09 escape deploy pr=6 check=health-smoke', 'b 2026-11-10 escape post-release pr=7 check=null-total-test', ''].join('\n'));
+  const lines = gsd(['stats', 'proj'], { home }).stdout.split('\n');
+  assert.ok(lines.includes('escapes: deploy 1, release 0, post-release 2'), lines.join('\n'));
+  assert.ok(lines.includes('checks added: health-smoke, null-total-test'), lines.join('\n'));
 });
 
 test('stats uses the current repo and names the fix when there is no history', () => {
   const result = gsd(['stats'], { cwd: project() });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /proj.* Fix: /);
+});
+
+const FAKE_GH = join(SANDBOX, 'fake-gh.mjs');
+writeFileSync(
+  FAKE_GH,
+  [
+    "import { readFileSync } from 'node:fs';",
+    "const answers = JSON.parse(readFileSync(process.env.FAKE_GH_ANSWERS, 'utf8'));",
+    "const answer = answers[process.argv.slice(2, 4).join(' ')];",
+    'if (answer === undefined) process.exit(1);',
+    'process.stdout.write(JSON.stringify(answer));',
+  ].join('\n'),
+);
+
+function shipRun(changes = {}, { lane = 'Direct', lines = [], gh = () => ({}), files = {}, guide } = {}) {
+  const cwd = branch(changes, { guide });
+  const home = freshDir('home');
+  const head = git(cwd, 'rev-parse', 'HEAD');
+  const runDir = join(home, 'proj', 's');
+  for (const [name, content] of Object.entries(files)) write(runDir, name, content);
+  write(runDir, 'log.md', [`2026-11-01 intake ok lane=${lane} base=main@${git(cwd, 'rev-parse', 'main')}`, ...lines, ''].join('\n'));
+  const answers = join(freshDir('gh'), 'answers.json');
+  writeFileSync(answers, JSON.stringify({ 'pr view': { state: 'OPEN', headRefOid: head, headRefName: 'work' }, 'run list': [], ...gh(head) }));
+  const env = { GSD_GH: FAKE_GH, FAKE_GH_ANSWERS: answers };
+  const ship = ({ gate = 'pass', diff = 'pass' } = {}) => gsd(['log', 's', 'ship', 'done', 'pr=5', `gate-first-pass=${gate}`, `diff-check=${diff}`], { cwd, home, env });
+  return { cwd, home, head, env, ship, log: () => readFileSync(join(runDir, 'log.md'), 'utf8') };
+}
+
+const WHY_COMMENT = `${SLASHES} The vendor API returns seconds, not milliseconds.\nexport const a = 1;\n`;
+
+function assertRefused(run, result, expected) {
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, expected);
+  assert.doesNotMatch(run.log(), / ship /);
+  assert.equal(existsSync(join(run.home, 'proj', 'history.log')), false);
+}
+
+test('ship logs a clean branch', () => {
+  const run = shipRun({ 'src/a.js': 'export const a = 2;\n' });
+  const result = run.ship();
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(run.log(), / ship done pr=5 gate-first-pass=pass diff-check=pass\n$/);
+});
+
+test('ship refuses pass while diff-check blocks', () => {
+  const run = shipRun({ 'src/a.test.js': SKIP_CALL });
+  assertRefused(run, run.ship(), /^block\s+src\/a\.test\.js:1 test-skipped: .* Fix: /m);
+});
+
+test('ship refuses a review finding without a keep line and prints the command to keep it', () => {
+  const run = shipRun({ 'src/a.js': WHY_COMMENT });
+  assertRefused(run, run.ship(), /^review src\/a\.js:1 comment-added: [\s\S]*gsd log s keep ok at=src\/a\.js:1 rule=comment-added why=</m);
+});
+
+test('ship takes a review finding once a keep line names it', () => {
+  const run = shipRun({ 'src/a.js': WHY_COMMENT }, { lines: ['2026-11-01 keep ok at=src/a.js:1 rule=comment-added why=external-api-units'] });
+  assert.equal(run.ship().status, 0);
+});
+
+test('ship refuses a keep line for another place or rule', () => {
+  const run = shipRun({ 'src/a.js': WHY_COMMENT }, { lines: ['2026-11-01 keep ok at=src/a.js:2 rule=comment-added why=moved', '2026-11-01 keep ok at=src/a.js:1 rule=doc-added why=wrong-rule'] });
+  assertRefused(run, run.ship(), /keep ok at=src\/a\.js:1 rule=comment-added/);
+});
+
+test('ship refuses diff-check=accepted while a blocking finding has no accept line', () => {
+  const run = shipRun({ 'src/a.test.js': SKIP_CALL });
+  assertRefused(run, run.ship({ diff: 'accepted' }), /gsd log s accept ok at=src\/a\.test\.js:1 rule=test-skipped by=user/);
+});
+
+test('ship takes diff-check=accepted once the user accepted each blocking finding', () => {
+  const run = shipRun({ 'src/a.test.js': SKIP_CALL }, { lines: ['2026-11-01 accept ok at=src/a.test.js:1 rule=test-skipped by=user'] });
+  assert.equal(run.ship({ diff: 'accepted' }).status, 0);
+});
+
+test('ship refuses diff-check=pass when the user accepted every blocking finding', () => {
+  const run = shipRun({ 'src/a.test.js': SKIP_CALL }, { lines: ['2026-11-01 accept ok at=src/a.test.js:1 rule=test-skipped by=user'] });
+  assertRefused(run, run.ship(), /diff-check=pass but 1 findings block, each accepted by the user\. Fix: .*diff-check=accepted/);
+});
+
+test('ship refuses diff-check=accepted when nothing blocks', () => {
+  const run = shipRun({ 'src/a.js': 'export const a = 2;\n' });
+  assertRefused(run, run.ship({ diff: 'accepted' }), /nothing blocks.* Fix: .*diff-check=pass/);
+});
+
+const CLEAN_CHANGE = { 'src/a.js': 'export const a = 2;\n' };
+const ciRun = (headSha, conclusion, createdAt, status = 'completed') => ({ name: 'gate', headSha, status, conclusion, createdAt });
+
+const GITHUB_REFUSALS = [
+  ['a PR whose head is not HEAD', () => ({ 'pr view': { state: 'OPEN', headRefOid: 'f'.repeat(40), headRefName: 'work' } }), {}, /head is fffffff but HEAD is .* Fix: git push/],
+  ['a PR that is not open', (head) => ({ 'pr view': { state: 'MERGED', headRefOid: head, headRefName: 'work' } }), {}, /PR #5 is merged, not open\. Fix: /],
+  ['a PR gh cannot read', () => ({ 'pr view': undefined }), {}, /gh could not read PR #5\. Fix: /],
+  ['runs gh cannot list', () => ({ 'run list': undefined }), {}, /gh could not list the workflow runs of work\. Fix: /],
+  ['a failed run on HEAD', (head) => ({ 'run list': [ciRun(head, 'failure', '2026-11-01T10:00:00Z')] }), {}, /run "gate" on HEAD ended failure\. Fix: /],
+  ['a branch whose runs have not reached HEAD yet', () => ({ 'run list': [ciRun('a'.repeat(40), 'success', '2026-11-01T10:00:00Z')] }), {}, /no workflow run on HEAD yet\. Fix: /],
+  ['a run on HEAD still in progress', (head) => ({ 'run list': [ciRun(head, '', '2026-11-01T10:00:00Z', 'in_progress')] }), {}, /run "gate" on HEAD is in_progress\. Fix: /],
+  [
+    'gate-first-pass=pass when the first run failed',
+    (head) => ({ 'run list': [ciRun(head, 'success', '2026-11-01T11:00:00Z'), ciRun('a'.repeat(40), 'failure', '2026-11-01T10:00:00Z')] }),
+    {},
+    /gate-first-pass=pass but the first gate runs, on aaaaaaa, failed\. Fix: .*gate-first-pass=fail/,
+  ],
+  ['gate-first-pass=fail when the first run passed', (head) => ({ 'run list': [ciRun(head, 'success', '2026-11-01T10:00:00Z')] }), { gate: 'fail' }, /gate-first-pass=fail but .* passed\. Fix: /],
+];
+
+for (const [name, gh, shipped, expected] of GITHUB_REFUSALS) {
+  test(`ship refuses ${name}`, () => {
+    const run = shipRun(CLEAN_CHANGE, { gh });
+    assertRefused(run, run.ship(shipped), expected);
+  });
+}
+
+test('ship takes gate-first-pass=fail when a cancelled run came before the first failure', () => {
+  const runs = (head) => ({
+    'run list': [ciRun(head, 'success', '2026-11-01T12:00:00Z'), ciRun('b'.repeat(40), 'failure', '2026-11-01T11:00:00Z'), ciRun('a'.repeat(40), 'cancelled', '2026-11-01T10:00:00Z')],
+  });
+  const run = shipRun(CLEAN_CHANGE, { gh: runs });
+  assert.equal(run.ship({ gate: 'fail' }).status, 0, run.log());
+});
+
+test('ship takes the reported gate-first-pass when the branch has no workflow runs', () => {
+  const run = shipRun(CLEAN_CHANGE);
+  assert.equal(run.ship({ gate: 'fail' }).status, 0);
+});
+
+const BUILT_T1 = '2026-11-01 card T1 level=standard builder=opus first-pass=pass commit=abc';
+const PROVEN_1 = '2026-11-01 criterion 1 test=src/a.test.js proven=yes';
+const LOGGED_2 = '2026-11-01 criterion 2 test=none proven=no';
+const REVIEWED = '2026-11-01 review clean';
+const standardShip = (lines, files = { 'brief.md': BRIEF }) => {
+  const run = shipRun(CLEAN_CHANGE, { lane: 'Standard', lines, files });
+  return { run, result: run.ship() };
+};
+
+test('Standard ship takes each criterion logged, one proven and a review line', () => {
+  const { result } = standardShip([BUILT_T1, PROVEN_1, LOGGED_2, REVIEWED]);
+  assert.equal(result.status, 0, result.stderr);
+});
+
+const CRITERIA_REFUSALS = [
+  ['an uncovered criterion', [BUILT_T1, PROVEN_1, REVIEWED], /criterion 2 has no criterion line\. Fix: gsd log s criterion 2 test=<path\|none> proven=yes\|no/],
+  ['a run where no criterion with a test is proven', [BUILT_T1, PROVEN_1.replace('yes', 'no'), LOGGED_2, REVIEWED], /no criterion with a test is proven\. Fix: /],
+  ['a run without a review line', [BUILT_T1, PROVEN_1, LOGGED_2], /no review line\. Fix: .*review clean\|changes/],
+  ['a criterion whose test file does not exist', [BUILT_T1, PROVEN_1.replace('src/a.test.js', 'src/gone.test.js'), LOGGED_2, REVIEWED], /criterion 1 names test=src\/gone\.test\.js, which is not in the checkout\. Fix: /],
+];
+
+for (const [name, lines, expected] of CRITERIA_REFUSALS) {
+  test(`Standard ship refuses ${name}`, () => {
+    const { run, result } = standardShip(lines);
+    assertRefused(run, result, expected);
+  });
+}
+
+test('Standard ship refuses a run folder without its brief', () => {
+  const { run, result } = standardShip([BUILT_T1, PROVEN_1, LOGGED_2, REVIEWED], {});
+  assertRefused(run, result, /no numbered acceptance criteria in .*brief\.md\. Fix: /);
+});
+
+test('Risky ship of an early PR needs only the criteria its built cards cover', () => {
+  const firstCard = CARD.join('\n').replace('Covers:     1, 2', 'Covers:     1');
+  const plan = `${firstCard}\n${firstCard.replace('## Tasks', '').replace('### T1', '### T2').replace('Covers:     1', 'Covers:     2')}`;
+  const files = { 'spec.md': ['# Spec', '', ...CRITERIA].join('\n'), 'plan.md': plan };
+  const run = shipRun(CLEAN_CHANGE, { lane: 'Risky', lines: [BUILT_T1, PROVEN_1, REVIEWED], files });
+  assert.equal(run.ship().status, 0, run.log());
+});
+
+test('summary lists the trust record with criteria, tests and proof', () => {
+  const cwd = project();
+  const home = freshDir('home');
+  const log = [
+    '2026-11-01 intake ok lane=Standard base=main@abc',
+    '2026-11-01 note this note stays out of the summary',
+    '2026-11-01 criterion 2 test=none proven=no',
+    '2026-11-01 criterion 1 test=src/a.test.js proven=no',
+    '2026-11-01 criterion 1 test=src/a.test.js proven=yes',
+    '2026-11-01 keep ok at=src/a.js:1 rule=comment-added why=external-api-units',
+    '2026-11-01 accept ok at=src/a.test.js:4 rule=test-skipped by=user',
+    '2026-11-01 review changes',
+    '2026-11-02 ship done pr=5 gate-first-pass=fail diff-check=accepted',
+    '',
+  ];
+  write(home, 'proj/s/log.md', log.join('\n'));
+  const result = gsd(['summary', 's'], { cwd, home });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    '## Trust record',
+    '',
+    '| Check | Result |',
+    '|---|---|',
+    '| Lane | Standard |',
+    '| Diff-check | accepted; 1 review finding kept, 1 blocking finding accepted by the user |',
+    '| Cold review | changes |',
+    '| Gate first pass | fail |',
+    '',
+    '| Criterion | Test | Proven by breaking the code |',
+    '|---|---|---|',
+    '| 1 | `src/a.test.js` | yes |',
+    '| 2 | none | no |',
+    '',
+    'Kept review findings:',
+    '- `src/a.js:1` comment-added: external api units',
+    '',
+    'Blocking findings the user accepted:',
+    '- `src/a.test.js:4` test-skipped',
+  ]);
+});
+
+test('summary before the ship line says what is not logged yet', () => {
+  const home = freshDir('home');
+  write(home, 'proj/s/log.md', '2026-11-01 intake ok lane=Direct base=main@abc\n');
+  const result = gsd(['summary', 's'], { cwd: project(), home });
+  assert.match(result.stdout, /^\| Diff-check \| not logged; 0 review findings kept, 0 blocking findings accepted by the user \|$/m);
+  assert.match(result.stdout, /^\| Gate first pass \| not logged \|$/m);
+});
+
+test('summary of an unknown run exits 1 and names the fix', () => {
+  const result = gsd(['summary', 'nope'], { cwd: project() });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /nope.* Fix: /);
+});
+
+test('ship refuses a run without an intake line', () => {
+  const run = shipRun({ 'src/a.js': 'export const a = 2;\n' });
+  writeFileSync(join(run.home, 'proj', 's', 'log.md'), '');
+  assertRefused(run, run.ship(), /intake.* Fix: /);
 });
 
 const GSD_CALL = 'node "/plugins/get-ship-done/scripts/gsd.mjs" log s note started';
@@ -671,7 +905,7 @@ test('every gsd log call in the ship skill uses a known phase', () => {
 
 test('every gsd command the ship skill names exists in the script', () => {
   const named = [...SHIP_SKILL.matchAll(/`gsd ([a-z-]+)/g)].map((call) => call[1]);
-  for (const expected of ['lint', 'diff-check', 'config', 'features', 'ui-audit']) assert.ok(named.includes(expected), `the ship skill never names gsd ${expected}`);
+  for (const expected of ['lint', 'diff-check', 'config', 'features', 'ui-audit', 'summary']) assert.ok(named.includes(expected), `the ship skill never names gsd ${expected}`);
   for (const name of named) assert.ok(COMMAND_NAMES.includes(name), `the ship skill names unknown command "gsd ${name}"`);
 });
 
@@ -679,6 +913,11 @@ test('every relative link in the ship skill resolves, including the UI design re
   const links = [...SHIP_SKILL.matchAll(/\]\(([^)#:]+)(?:#[^)]*)?\)/g)].map((link) => link[1]);
   assert.ok(links.includes('references/ui-design.md'), `the ship skill does not link the UI design reference, found: ${links}`);
   for (const link of links) assert.ok(existsSync(join(HERE, '..', 'skills', 'ship', link)), `the ship skill links missing file ${link}`);
+});
+
+test('the ship skill logs every phase the ship line is verified against, and escapes', () => {
+  for (const phase of ['keep', 'accept', 'criterion', 'review', 'escape']) assert.match(SHIP_SKILL, new RegExp(`gsd log <slug> ${phase} `), `the ship skill never logs ${phase}`);
+  assert.doesNotMatch(SHIP_SKILL, /below Opus/, 'every Standard change gets a cold review, whatever the model');
 });
 
 test("the ship skill's card template has every field lint requires", () => {
@@ -750,6 +989,14 @@ const REJECTED_LOG_LINES = [
   [['outcome', 'merged'], /missing pr/],
   [['outcome', 'landed', 'pr=5'], /result "landed".*merged\|closed\|reverted/],
   [['gate', 'two words'], /result/],
+  [['keep', 'ok', 'at=src/a.js:1', 'rule=comment-added', 'why=Because'], /why=Because.*kebab/],
+  [['keep', 'ok', 'at=src/a.js:1', 'rule=comment-added'], /missing why/],
+  [['accept', 'ok', 'at=src/a.js:1', 'rule=test-skipped', 'by=agent'], /by=agent.*user/],
+  [['review', 'done'], /result "done".*clean\|changes/],
+  [['escape', 'prod', 'pr=5', 'check=x'], /result "prod".*deploy\|release\|post-release/],
+  [['escape', 'release', 'pr=5'], /missing check/],
+  [['criterion', 'two', 'test=none', 'proven=no'], /result "two".*a number/],
+  [['criterion', '1', 'test=a.test.js', 'proven=maybe'], /proven=maybe.*yes\|no/],
   [['note', 'line one\nline two'], /one line/],
   [['note'], /needs text/],
 ];

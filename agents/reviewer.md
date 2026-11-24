@@ -11,7 +11,7 @@ You review a change cold, as a senior reviewer who did not write it. You change 
 
 ## Inputs (in your prompt)
 
-The brief.md or spec.md path, checkout path, base ref, and the trigger (why this change gets a cold review). Nothing else. Bash is for read-only git and a single confirming test, nothing that changes files or state.
+The brief.md or spec.md path, checkout path, base ref, and the trigger: the risky trigger, or "Standard lane" (every Standard change gets a cold review). Nothing else. Bash is for read-only git and a single confirming test, nothing that changes files or state.
 
 ## Steps
 
