@@ -197,7 +197,9 @@ function githubProblems(given) {
   if (pr.headRefOid !== head) problems.push(`PR #${given.pr} head is ${short(pr.headRefOid)} but HEAD is ${short(head)}. Fix: git push, then log ship again.`);
   const runs = gh(['run', 'list', '--branch', pr.headRefName, '--limit', '200', '--json', 'name,headSha,status,conclusion,createdAt']);
   if (!runs) return [...problems, `gh could not list the workflow runs of ${pr.headRefName}. Fix: check gh auth status, then log ship again.`];
-  for (const run of runs.filter((item) => item.headSha === head)) {
+  const onHead = runs.filter((item) => item.headSha === head);
+  if (runs.length > 0 && onHead.length === 0) problems.push(`no workflow run on HEAD yet. Fix: ${pr.headRefName} has runs, so wait for CI to start on HEAD (gh run watch), then log ship again.`);
+  for (const run of onHead) {
     if (run.status !== 'completed') problems.push(`run "${run.name}" on HEAD is ${run.status}. Fix: wait for it to finish (gh run watch), then log ship again.`);
     else if (!RUN_PASSED.includes(run.conclusion)) problems.push(`run "${run.name}" on HEAD ended ${run.conclusion}. Fix: fix the cause and push; log ship again once it passes.`);
   }

@@ -647,6 +647,11 @@ test('ship takes diff-check=accepted once the user accepted each blocking findin
   assert.equal(run.ship({ diff: 'accepted' }).status, 0);
 });
 
+test('ship refuses diff-check=pass when the user accepted every blocking finding', () => {
+  const run = shipRun({ 'src/a.test.js': SKIP_CALL }, { lines: ['2026-11-01 accept ok at=src/a.test.js:1 rule=test-skipped by=user'] });
+  assertRefused(run, run.ship(), /diff-check=pass but 1 findings block, each accepted by the user\. Fix: .*diff-check=accepted/);
+});
+
 test('ship refuses diff-check=accepted when nothing blocks', () => {
   const run = shipRun({ 'src/a.js': 'export const a = 2;\n' });
   assertRefused(run, run.ship({ diff: 'accepted' }), /nothing blocks.* Fix: .*diff-check=pass/);
@@ -661,6 +666,7 @@ const GITHUB_REFUSALS = [
   ['a PR gh cannot read', () => ({ 'pr view': undefined }), {}, /gh could not read PR #5\. Fix: /],
   ['runs gh cannot list', () => ({ 'run list': undefined }), {}, /gh could not list the workflow runs of work\. Fix: /],
   ['a failed run on HEAD', (head) => ({ 'run list': [ciRun(head, 'failure', '2026-11-01T10:00:00Z')] }), {}, /run "gate" on HEAD ended failure\. Fix: /],
+  ['a branch whose runs have not reached HEAD yet', () => ({ 'run list': [ciRun('a'.repeat(40), 'success', '2026-11-01T10:00:00Z')] }), {}, /no workflow run on HEAD yet\. Fix: /],
   ['a run on HEAD still in progress', (head) => ({ 'run list': [ciRun(head, '', '2026-11-01T10:00:00Z', 'in_progress')] }), {}, /run "gate" on HEAD is in_progress\. Fix: /],
   [
     'gate-first-pass=pass when the first run failed',
