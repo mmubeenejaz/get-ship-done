@@ -85,3 +85,52 @@ test('log rejects a card line without level and writes nothing', () => {
   assert.match(result.stderr, /mechanical\|standard\|judgment/);
   assert.equal(existsSync(join(home, 'proj')), false);
 });
+
+const GUIDE = [
+  '# Guide',
+  '',
+  '## Get Ship Done',
+  '',
+  '- gate: `npm run gate`',
+  '- tests: `spec/**`, `src/**/*.check.ts`',
+  '- deprecated: `src/legacy/**`',
+  '- docs: `docs/modules/**`',
+  '',
+  'Prose in the section is ignored.',
+  '',
+  '## Other',
+  '',
+  '- gate: not this one',
+  '',
+].join('\n');
+
+test('config prints the section keys as JSON', () => {
+  const cwd = project({ 'AGENTS.md': GUIDE });
+  const result = gsd(['config'], { cwd });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    gate: 'npm run gate',
+    tests: ['spec/**', 'src/**/*.check.ts'],
+    deprecated: ['src/legacy/**'],
+    docs: ['docs/modules/**'],
+  });
+});
+
+test('config reads CLAUDE.md when AGENTS.md has no section', () => {
+  const cwd = project({ 'AGENTS.md': '# Guide\n', 'CLAUDE.md': GUIDE });
+  assert.equal(JSON.parse(gsd(['config'], { cwd }).stdout).gate, 'npm run gate');
+});
+
+test('config warns about a key it does not know', () => {
+  const cwd = project({ 'AGENTS.md': '## Get Ship Done\n\n- gaet: `npm run gate`\n' });
+  const result = gsd(['config'], { cwd });
+  assert.equal(result.status, 0);
+  assert.match(result.stderr, /gaet/);
+});
+
+test('config without a section exits 1 naming setup', () => {
+  const cwd = project();
+  const result = gsd(['config'], { cwd });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /\/get-ship-done:setup/);
+});

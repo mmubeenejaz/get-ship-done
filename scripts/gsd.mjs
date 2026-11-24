@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, mkdirSync, realpathSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -88,7 +88,58 @@ function log([slug, phase, ...rest]) {
   appendFileSync(join(repoDir, 'history.log'), `${slug} ${line}\n`);
 }
 
-const COMMANDS = { log };
+function parseFlags(args, names) {
+  const flags = {};
+  const positional = [];
+  for (let i = 0; i < args.length; i++) {
+    const name = args[i].startsWith('--') ? args[i].slice(2) : null;
+    if (name === null) positional.push(args[i]);
+    else if (!names.includes(name)) fail(`gsd: unknown option --${name}. Fix: use ${names.map((n) => `--${n}`).join(', ')}.`);
+    else if (args[i + 1] === undefined) fail(`gsd: --${name} needs a value.`);
+    else flags[name] = args[++i];
+  }
+  return { flags, positional };
+}
+
+const repoRoot = (cwd = process.cwd()) => git(['rev-parse', '--show-toplevel'], cwd)?.trim() ?? cwd;
+
+export const CONFIG_KEYS = ['gate', 'gate-backup', 'preflight', 'precheck', 'selector', 'migration', 'pr-facts', 'tidy', 'subagent-text', 'tests', 'deprecated', 'docs', 'feature-map', 'verify'];
+const LIST_KEYS = ['tests', 'deprecated', 'docs'];
+const GUIDES = ['AGENTS.md', 'CLAUDE.md'];
+const SECTION = /^##\s+Get Ship Done\s*$/i;
+
+function readConfig(root) {
+  for (const guide of GUIDES) {
+    const path = join(root, guide);
+    if (!existsSync(path)) continue;
+    const lines = readFileSync(path, 'utf8').split(/\r?\n/);
+    const start = lines.findIndex((line) => SECTION.test(line));
+    if (start < 0) continue;
+    const values = {};
+    for (const line of lines.slice(start + 1)) {
+      if (/^##\s/.test(line)) break;
+      const entry = line.match(/^\s*[-*]\s+([a-z][a-z-]*):\s*(.+)$/);
+      if (!entry) continue;
+      const [, key, raw] = entry;
+      const value = raw.replace(/`/g, '').trim();
+      values[key] = LIST_KEYS.includes(key) ? value.split(',').map((item) => item.trim()).filter(Boolean) : value;
+    }
+    return { guide, values };
+  }
+  return null;
+}
+
+function config(args) {
+  const { flags } = parseFlags(args, ['root']);
+  const found = readConfig(flags.root ?? repoRoot());
+  if (!found) fail(`gsd config: no "## Get Ship Done" section in ${GUIDES.join(' or ')}. Fix: run /get-ship-done:setup in this project to write it.`);
+  for (const key of Object.keys(found.values)) {
+    if (!CONFIG_KEYS.includes(key)) process.stderr.write(`gsd config: unknown key "${key}" in ${found.guide}. Fix: use one of ${CONFIG_KEYS.join(', ')}.\n`);
+  }
+  process.stdout.write(`${JSON.stringify(found.values, null, 2)}\n`);
+}
+
+const COMMANDS = { log, config };
 
 function main(argv) {
   const [name, ...args] = argv;
