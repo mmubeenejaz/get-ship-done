@@ -49,7 +49,8 @@ export const PHASES = {
   simplify: {},
   gate: {},
   'self-review': {},
-  review: {},
+  review: { result: oneOf(['clean', 'changes']) },
+  criterion: { result: DIGITS, keys: { test: ANY, proven: oneOf(['yes', 'no']) } },
   keep: { result: oneOf(['ok']), keys: { at: ANY, rule: KEBAB, why: KEBAB } },
   accept: { result: oneOf(['ok']), keys: { at: ANY, rule: KEBAB, by: oneOf(['user']) } },
   ship: { keys: { pr: DIGITS, 'gate-first-pass': oneOf(PASS_FAIL), 'diff-check': oneOf(['pass', 'accepted']) } },
@@ -122,7 +123,7 @@ function verifyShip(slug, given) {
   const [ref, sha] = intake.given.base.split('@');
   const base = [`origin/${ref}`, ref, sha].find((candidate) => candidate && isCommit(candidate));
   if (!base) fail(`gsd log: ship refused, the intake base "${intake.given.base}" is not a commit git knows. Fix: git fetch, or log a new intake line whose base=<branch>@<sha> resolves.`);
-  const problems = [...diffProblems(slug, base, given, entries), ...githubProblems(given)];
+  const problems = [...diffProblems(slug, base, given, entries), ...criteriaProblems(slug, intake.given.lane, entries), ...githubProblems(given)];
   if (problems.length > 0) fail(['gsd log: ship refused, nothing was written. Fix each problem, then log ship again:', ...capped(problems, REVIEW_LIMIT)].join('\n'));
 }
 
@@ -141,6 +142,27 @@ function diffProblems(slug, base, given, entries) {
   for (const finding of review.filter((item) => !named(kept, item))) {
     problems.push(`${findingLine('review', finding)}\n  Or keep it: gsd log ${slug} keep ok at=${atOf(finding.where)} rule=${finding.rule} why=<kebab-case-reason>.`);
   }
+  return problems;
+}
+
+const coveredNumbers = (card) => card.fields.Covers?.value.match(/\d+/g)?.map(Number) ?? [];
+
+function criteriaProblems(slug, lane, entries) {
+  if (lane === 'Direct') return [];
+  const [criteriaFile, cardsFile] = (lane === 'Standard' ? ['brief.md', 'brief.md'] : ['spec.md', 'plan.md']).map((name) => join(runDir(slug), name));
+  const numbers = readCriteria(criteriaFile).map((criterion) => criterion.number);
+  const cards = existsSync(cardsFile) ? readCards(readFileSync(cardsFile, 'utf8').split(/\r?\n/)) : [];
+  const built = new Set(entries.filter((entry) => entry.phase === 'card').map((entry) => entry.result));
+  const isBuilt = (number) => cards.filter((card) => coveredNumbers(card).includes(number)).every((card) => built.has(card.id));
+  const required = built.size === 0 ? numbers : numbers.filter(isBuilt);
+  const logged = new Map(entries.filter((entry) => entry.phase === 'criterion').map((entry) => [Number(entry.result), entry.given]));
+  const problems = [];
+  if (numbers.length === 0) problems.push(`no numbered acceptance criteria in ${criteriaFile}. Fix: keep the approved ${basename(criteriaFile)}, with its "## Acceptance criteria" section, in the run folder.`);
+  for (const number of required.filter((item) => !logged.has(item))) problems.push(`criterion ${number} has no criterion line. Fix: gsd log ${slug} criterion ${number} test=<path|none> proven=yes|no.`);
+  if (required.length > 0 && !required.some((number) => logged.get(number)?.test !== 'none' && logged.get(number)?.proven === 'yes')) {
+    problems.push("no criterion with a test is proven. Fix: break the code under the most important criterion's test, see the test fail, restore the code, and log that criterion with proven=yes.");
+  }
+  if (!entries.some((entry) => entry.phase === 'review')) problems.push(`no review line. Fix: run the cold review, then gsd log ${slug} review clean|changes.`);
   return problems;
 }
 

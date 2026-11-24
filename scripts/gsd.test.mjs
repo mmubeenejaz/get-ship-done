@@ -681,6 +681,46 @@ test('ship takes the reported gate-first-pass when the branch has no workflow ru
   assert.equal(run.ship({ gate: 'fail' }).status, 0);
 });
 
+const BUILT_T1 = '2026-11-01 card T1 level=standard builder=opus first-pass=pass commit=abc';
+const PROVEN_1 = '2026-11-01 criterion 1 test=src/a.test.js proven=yes';
+const LOGGED_2 = '2026-11-01 criterion 2 test=none proven=no';
+const REVIEWED = '2026-11-01 review clean';
+const standardShip = (lines, files = { 'brief.md': BRIEF }) => {
+  const run = shipRun(CLEAN_CHANGE, { lane: 'Standard', lines, files });
+  return { run, result: run.ship() };
+};
+
+test('Standard ship takes each criterion logged, one proven and a review line', () => {
+  const { result } = standardShip([BUILT_T1, PROVEN_1, LOGGED_2, REVIEWED]);
+  assert.equal(result.status, 0, result.stderr);
+});
+
+const CRITERIA_REFUSALS = [
+  ['an uncovered criterion', [BUILT_T1, PROVEN_1, REVIEWED], /criterion 2 has no criterion line\. Fix: gsd log s criterion 2 test=<path\|none> proven=yes\|no/],
+  ['a run where no criterion with a test is proven', [BUILT_T1, PROVEN_1.replace('yes', 'no'), LOGGED_2, REVIEWED], /no criterion with a test is proven\. Fix: /],
+  ['a run without a review line', [BUILT_T1, PROVEN_1, LOGGED_2], /no review line\. Fix: .*review clean\|changes/],
+];
+
+for (const [name, lines, expected] of CRITERIA_REFUSALS) {
+  test(`Standard ship refuses ${name}`, () => {
+    const { run, result } = standardShip(lines);
+    assertRefused(run, result, expected);
+  });
+}
+
+test('Standard ship refuses a run folder without its brief', () => {
+  const { run, result } = standardShip([BUILT_T1, PROVEN_1, LOGGED_2, REVIEWED], {});
+  assertRefused(run, result, /no numbered acceptance criteria in .*brief\.md\. Fix: /);
+});
+
+test('Risky ship of an early PR needs only the criteria its built cards cover', () => {
+  const firstCard = CARD.join('\n').replace('Covers:     1, 2', 'Covers:     1');
+  const plan = `${firstCard}\n${firstCard.replace('## Tasks', '').replace('### T1', '### T2').replace('Covers:     1', 'Covers:     2')}`;
+  const files = { 'spec.md': ['# Spec', '', ...CRITERIA].join('\n'), 'plan.md': plan };
+  const run = shipRun(CLEAN_CHANGE, { lane: 'Risky', lines: [BUILT_T1, PROVEN_1, REVIEWED], files });
+  assert.equal(run.ship().status, 0, run.log());
+});
+
 test('ship refuses a run without an intake line', () => {
   const run = shipRun({ 'src/a.js': 'export const a = 2;\n' });
   writeFileSync(join(run.home, 'proj', 's', 'log.md'), '');
@@ -875,6 +915,9 @@ const REJECTED_LOG_LINES = [
   [['keep', 'ok', 'at=src/a.js:1', 'rule=comment-added', 'why=Because'], /why=Because.*kebab/],
   [['keep', 'ok', 'at=src/a.js:1', 'rule=comment-added'], /missing why/],
   [['accept', 'ok', 'at=src/a.js:1', 'rule=test-skipped', 'by=agent'], /by=agent.*user/],
+  [['review', 'done'], /result "done".*clean\|changes/],
+  [['criterion', 'two', 'test=none', 'proven=no'], /result "two".*a number/],
+  [['criterion', '1', 'test=a.test.js', 'proven=maybe'], /proven=maybe.*yes\|no/],
   [['note', 'line one\nline two'], /one line/],
   [['note'], /needs text/],
 ];
