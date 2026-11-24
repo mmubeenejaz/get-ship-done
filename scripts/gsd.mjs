@@ -30,6 +30,7 @@ function today() {
 }
 
 const LANES = ['Direct', 'Standard', 'Risky'];
+const ESCAPE_LAYERS = ['deploy', 'release', 'post-release'];
 export const LEVELS = ['mechanical', 'standard', 'judgment'];
 const PASS_FAIL = ['pass', 'fail'];
 const DIGITS = { test: (value) => /^\d+$/.test(value), hint: 'a number' };
@@ -56,6 +57,7 @@ export const PHASES = {
   ship: { keys: { pr: DIGITS, 'gate-first-pass': oneOf(PASS_FAIL), 'diff-check': oneOf(['pass', 'accepted']) } },
   handoff: {},
   outcome: { result: oneOf(['merged', 'closed', 'reverted']), keys: { pr: DIGITS } },
+  escape: { result: oneOf(ESCAPE_LAYERS), keys: { pr: DIGITS, check: KEBAB } },
   note: { freeText: true },
   next: { freeText: true },
 };
@@ -566,6 +568,8 @@ function stats([repo = repoName()]) {
   const lanes = new Map();
   const cards = new Map();
   const outcomes = new Map([['merged', 0], ['closed', 0], ['reverted', 0]]);
+  const escapes = new Map(ESCAPE_LAYERS.map((layer) => [layer, 0]));
+  const checksAdded = new Set();
   const gate = { pass: 0, total: 0, accepted: 0 };
   let unparsed = 0;
   for (const line of readFileSync(historyFile, 'utf8').split(/\r?\n/).filter(Boolean)) {
@@ -577,6 +581,10 @@ function stats([repo = repoName()]) {
     const { phase } = entry;
     if (phase === 'intake') tally(lanes, entry.given.lane);
     if (phase === 'outcome') tally(outcomes, entry.result);
+    if (phase === 'escape') {
+      tally(escapes, entry.result);
+      checksAdded.add(entry.given.check);
+    }
     if (phase === 'card') {
       const key = `${entry.given.level}/${entry.given.builder}`;
       const count = cards.get(key) ?? { pass: 0, total: 0 };
@@ -599,6 +607,8 @@ function stats([repo = repoName()]) {
       `gate first-pass: ${gate.total ? percent(gate.pass, gate.total) : 'none'}`,
       `diff-check accepted: ${gate.accepted}/${gate.total}`,
       `outcomes: ${['merged', 'closed', 'reverted'].map((key) => `${key} ${outcomes.get(key)}`).join(', ')}`,
+      `escapes: ${ESCAPE_LAYERS.map((layer) => `${layer} ${escapes.get(layer)}`).join(', ')}`,
+      `checks added: ${[...checksAdded].sort().join(', ') || 'none'}`,
       `unparsed lines: ${unparsed}`,
     ].join('\n') + '\n',
   );

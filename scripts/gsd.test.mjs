@@ -555,8 +555,18 @@ test('stats reports first-pass rates, lanes, outcomes and unparsed lines', () =>
     'gate first-pass: 1/2 (50%)',
     'diff-check accepted: 1/2',
     'outcomes: merged 1, closed 0, reverted 1',
+    'escapes: deploy 0, release 0, post-release 0',
+    'checks added: none',
     'unparsed lines: 2',
   ]);
+});
+
+test('stats counts escapes by layer and lists the checks they added', () => {
+  const home = freshDir('home');
+  write(home, 'proj/history.log', ['a 2026-11-08 escape post-release pr=5 check=null-total-test', 'b 2026-11-09 escape deploy pr=6 check=health-smoke', 'b 2026-11-10 escape post-release pr=7 check=null-total-test', ''].join('\n'));
+  const lines = gsd(['stats', 'proj'], { home }).stdout.split('\n');
+  assert.ok(lines.includes('escapes: deploy 1, release 0, post-release 2'), lines.join('\n'));
+  assert.ok(lines.includes('checks added: health-smoke, null-total-test'), lines.join('\n'));
 });
 
 test('stats uses the current repo and names the fix when there is no history', () => {
@@ -916,6 +926,8 @@ const REJECTED_LOG_LINES = [
   [['keep', 'ok', 'at=src/a.js:1', 'rule=comment-added'], /missing why/],
   [['accept', 'ok', 'at=src/a.js:1', 'rule=test-skipped', 'by=agent'], /by=agent.*user/],
   [['review', 'done'], /result "done".*clean\|changes/],
+  [['escape', 'prod', 'pr=5', 'check=x'], /result "prod".*deploy\|release\|post-release/],
+  [['escape', 'release', 'pr=5'], /missing check/],
   [['criterion', 'two', 'test=none', 'proven=no'], /result "two".*a number/],
   [['criterion', '1', 'test=a.test.js', 'proven=maybe'], /proven=maybe.*yes\|no/],
   [['note', 'line one\nline two'], /one line/],
