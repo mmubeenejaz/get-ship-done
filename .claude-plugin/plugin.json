@@ -7,6 +7,6 @@
   "homepage": "https://mmubeenejaz.github.io/get-ship-done/",
   "license": "MIT",
   "keywords": ["engineering", "workflow", "tdd", "code-review", "orchestration"],
-  "skills": ["./skills/ship"],
+  "skills": ["./skills/ship", "./skills/setup"],
   "agents": ["./agents/reviewer.md"]
 }
