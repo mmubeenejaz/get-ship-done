@@ -485,7 +485,7 @@ test('the setup skill is user-invoked and writes only section keys gsd config kn
   const skill = readSetup('SKILL.md');
   assert.match(skill, /^disable-model-invocation: true$/m);
   const keys = [...skill.matchAll(/^- ([a-z][a-z-]*): /gm)].map((line) => line[1]);
-  assert.ok(keys.includes('gate') && keys.includes('docs') && keys.includes('feature-map'), `found keys: ${keys}`);
+  assert.ok(['gate', 'docs', 'feature-map', 'design'].every((key) => keys.includes(key)), `found keys: ${keys}`);
   for (const key of keys) assert.ok(CONFIG_KEYS.includes(key), `the setup skill writes unknown key "${key}"`);
 });
 
