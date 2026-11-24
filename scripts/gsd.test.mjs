@@ -308,6 +308,39 @@ for (const [name, changes, options, expected] of REVIEW_CASES) {
   });
 }
 
+const LEGACY = { 'src/legacy/x.js': 'export const x = 1;\n', 'app/legacy/old.py': 'def f():\n    pass\n' };
+const LEGACY_GUIDE = '## Get Ship Done\n\n- deprecated: `src/legacy/**`, `app/legacy/**`\n';
+const legacyBranch = (changes) => branch(changes, { guide: LEGACY_GUIDE, base: LEGACY });
+
+const DEPRECATED_IMPORTS = [
+  ['a relative import', 'src/a.js', "import { x } from './legacy/x.js';"],
+  ['an extensionless relative import', 'src/feature/b.ts', "import { x } from '../legacy/x';"],
+  ['an alias import', 'src/feature/c.tsx', "import { x } from '@/legacy/x';"],
+  ['a require call', 'src/d.cjs', "const { x } = require('./legacy/x');"],
+  ['a re-export', 'src/e.js', "export * from './legacy/x.js';"],
+  ['a Python dotted import', 'app/main.py', 'from app.legacy.old import f'],
+  ['a relative Python import', 'app/api/views.py', 'from ..legacy import old'],
+];
+
+for (const [name, path, line] of DEPRECATED_IMPORTS) {
+  test(`diff-check blocks ${name} of deprecated code`, () => {
+    const result = diffCheck(legacyBranch({ [path]: `${line}\n` }));
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stdout, new RegExp(`^block\\s+${path.replace(/\./g, '\\.')}:1 deprecated-import: .* Fix: `, 'm'));
+  });
+}
+
+test('diff-check lets deprecated code import itself and lists the edit for review', () => {
+  const result = diffCheck(legacyBranch({ 'src/legacy/y.js': "import { x } from './x.js';\n" }));
+  assert.equal(result.status, 0, result.stdout);
+  assert.match(result.stdout, /^review src\/legacy\/y\.js:1 deprecated-edit: .* Fix: /m);
+});
+
+test('diff-check passes an import of current code next to deprecated code', () => {
+  const result = diffCheck(legacyBranch({ 'src/a.js': "import { b } from './b.js';\nimport { legacyName } from './legacy-names.js';\n" }));
+  assert.match(result.stdout, /^diff-check: 0 blocking, 0 review$/m);
+});
+
 const FAR_FILE = (value) => `${SLASHES} Returns the total in cents.\n${'export const filler = 0;\n'.repeat(8)}export const total = ${value};\n`;
 
 test('diff-check leaves a comment far from changed code alone', () => {
