@@ -33,6 +33,12 @@ Draft a `## Get Ship Done` section for the project guide (AGENTS.md, or CLAUDE.m
 - feature-map: <folder of the feature map, default docs/feature-map>
 - verify: <the project's verification skill or command>
 - design: <where the UI tokens and shared components live>
+- coverage: <command that writes an lcov report; ship then requires changed lines covered or kept>
+- lcov: <path of that lcov report, default coverage/lcov.info>
+- mutate: <mutation-testing command, scoped with gsd changed; ship then requires changed lines' mutants killed or kept>
+- mutation-report: <path of its mutation-testing-elements JSON report, default reports/mutation/mutation.json>
+- smoke: <command a deploy runs against the new release to prove its main flows>
+- health: <URL or command that says a deployed release is up>
 ```
 
 Show the draft and ask before writing. Then run `gsd config`: it must print the keys with no warning.
@@ -47,10 +53,12 @@ Change nothing in this part. Report what you found and what is missing:
 | Types | strict mode on; count of `any` escapes |
 | Lint | present, and whether it enforces boundaries (which module may import which) |
 | Suppressions | count of lint and type suppressions today; this is the baseline |
-| Deprecated code | old ways still in the tree that a builder would copy |
+| Deprecated code | old ways still in the tree that a builder would copy; the `gsd deprecated` report once the globs are set |
 | Tests | a selector, or a feature map that can stand in for one |
 | Docs | where living docs sit; planning files, logs or backups tracked in git |
 | UI tokens | where color, spacing and type tokens and shared components live; the `gsd ui-audit` tally as the baseline; whether a lint rule rejects raw colors and one-off values |
+| Fitness checks | an authorization test that walks every entry point; tenant data reached through one typed path or row-level security; module boundaries enforced in lint; config validated at startup |
+| Coverage, mutation, property tests | an lcov-writing coverage command, a mutation tool with a JSON report, a property-test library; the `coverage`, `mutate` and their report keys once present |
 | Rules without an enforcer | lines in the guide that nothing checks |
 
 For each gap recommend the highest level that removes it: architecture that makes the mistake impossible, then a type, then a lint rule whose error names the fix, then a test, and a line in the guide only for a judgment call. Offer each as its own requirement for `/get-ship-done:ship`; do not fix them here.

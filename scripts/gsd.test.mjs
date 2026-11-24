@@ -1,7 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -308,6 +308,67 @@ for (const [name, changes, options, expected] of REVIEW_CASES) {
   });
 }
 
+const LEGACY = { 'src/legacy/x.js': 'export const x = 1;\n', 'app/legacy/old.py': 'def f():\n    pass\n' };
+const LEGACY_GUIDE = '## Get Ship Done\n\n- deprecated: `src/legacy/**`, `app/legacy/**`\n';
+const legacyBranch = (changes) => branch(changes, { guide: LEGACY_GUIDE, base: LEGACY });
+
+const DEPRECATED_IMPORTS = [
+  ['a relative import', 'src/a.js', "import { x } from './legacy/x.js';"],
+  ['an extensionless relative import', 'src/feature/b.ts', "import { x } from '../legacy/x';"],
+  ['an alias import', 'src/feature/c.tsx', "import { x } from '@/legacy/x';"],
+  ['a require call', 'src/d.cjs', "const { x } = require('./legacy/x');"],
+  ['a re-export', 'src/e.js', "export * from './legacy/x.js';"],
+  ['a Python dotted import', 'app/main.py', 'from app.legacy.old import f'],
+  ['a relative Python import', 'app/api/views.py', 'from ..legacy import old'],
+  ['a Python package import with an alias', 'app/main.py', 'from app import legacy as old_code'],
+  ['a plain Python import with an alias', 'app/main.py', 'import app.legacy.old as old'],
+  ['a Python import list', 'app/main.py', 'import os, app.legacy.old'],
+  ['a Python star import', 'app/main.py', 'from app.legacy.old import *'],
+];
+
+for (const [name, path, line] of DEPRECATED_IMPORTS) {
+  test(`diff-check blocks ${name} of deprecated code`, () => {
+    const result = diffCheck(legacyBranch({ [path]: `${line}\n` }));
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stdout, new RegExp(`^block\\s+${path.replace(/\./g, '\\.')}:1 deprecated-import: .* Fix: `, 'm'));
+  });
+}
+
+test('diff-check lets deprecated code import itself and lists the edit for review', () => {
+  const result = diffCheck(legacyBranch({ 'src/legacy/y.js': "import { x } from './x.js';\n" }));
+  assert.equal(result.status, 0, result.stdout);
+  assert.match(result.stdout, /^review src\/legacy\/y\.js:1 deprecated-edit: .* Fix: /m);
+});
+
+test('diff-check passes an import of current code next to deprecated code', () => {
+  const result = diffCheck(legacyBranch({ 'src/a.js': "import { b } from './b.js';\nimport { legacyName } from './legacy-names.js';\n" }));
+  assert.match(result.stdout, /^diff-check: 0 blocking, 0 review$/m);
+});
+
+test('deprecated lists each area with its importers, marks one with none ready to delete and deletes nothing', () => {
+  const cwd = project({
+    'AGENTS.md': '## Get Ship Done\n\n- deprecated: `src/legacy/**`, `app/legacy/**`, `old/**`\n',
+    ...LEGACY,
+    'src/legacy/y.js': "import { x } from './x.js';\n",
+    'src/a.js': "export const a = 1;\nimport { x } from './legacy/x.js';\n",
+    'app/main.py': 'import os\n',
+  });
+  const result = gsd(['deprecated'], { cwd });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^area src\/legacy\/\*\* files=2 importers=1$/m);
+  assert.match(result.stdout, /^ {2}importer src\/a\.js:2$/m);
+  assert.match(result.stdout, /^area app\/legacy\/\*\* files=1 importers=0 ready-to-delete$/m);
+  assert.match(result.stdout, /^area old\/\*\* files=0 stale-glob$/m);
+  assert.match(result.stdout, /^deprecated: 3 areas, 1 ready-to-delete, 1 stale-glob$/m);
+  assert.equal(git(cwd, 'status', '--porcelain'), '');
+});
+
+test('deprecated without a deprecated key names the fix', () => {
+  const result = gsd(['deprecated'], { cwd: project() });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /no deprecated globs.*Fix: /);
+});
+
 const FAR_FILE = (value) => `${SLASHES} Returns the total in cents.\n${'export const filler = 0;\n'.repeat(8)}export const total = ${value};\n`;
 
 test('diff-check leaves a comment far from changed code alone', () => {
@@ -492,10 +553,11 @@ const SETUP_DIR = join(HERE, '..', 'skills', 'setup');
 const readSetup = (...path) => readFileSync(join(SETUP_DIR, ...path), 'utf8');
 
 test('the setup skill is user-invoked and writes only section keys gsd config knows', () => {
+  assert.match(readSetup('SKILL.md'), /gsd deprecated/);
   const skill = readSetup('SKILL.md');
   assert.match(skill, /^disable-model-invocation: true$/m);
   const keys = [...skill.matchAll(/^- ([a-z][a-z-]*): /gm)].map((line) => line[1]);
-  assert.ok(['gate', 'docs', 'feature-map', 'design'].every((key) => keys.includes(key)), `found keys: ${keys}`);
+  assert.ok(['gate', 'docs', 'feature-map', 'design', 'coverage', 'lcov', 'mutate', 'mutation-report', 'smoke', 'health'].every((key) => keys.includes(key)), `found keys: ${keys}`);
   for (const key of keys) assert.ok(CONFIG_KEYS.includes(key), `the setup skill writes unknown key "${key}"`);
 });
 
@@ -655,6 +717,90 @@ test('ship refuses diff-check=pass when the user accepted every blocking finding
 test('ship refuses diff-check=accepted when nothing blocks', () => {
   const run = shipRun({ 'src/a.js': 'export const a = 2;\n' });
   assertRefused(run, run.ship({ diff: 'accepted' }), /nothing blocks.* Fix: .*diff-check=pass/);
+});
+
+const COVERED_CHANGE = { 'src/a.js': 'export const a = 1;\nexport const b = 2;\n', 'src/b.js': 'export const c = 3;\n', 'README.md': 'more\n' };
+const LCOV = (sourceFile = 'src/a.js') => `TN:\nSF:${sourceFile}\nDA:1,4\nDA:2,0\nend_of_record\n`;
+const coverage = (cwd, args = []) => gsd(['coverage', '--base', 'main', ...args], { cwd });
+
+test('coverage lists a changed line with zero hits and a changed file missing from the report', () => {
+  const cwd = branch(COVERED_CHANGE);
+  write(cwd, 'coverage/lcov.info', LCOV());
+  const result = coverage(cwd);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^review src\/a\.js:2 uncovered-line: .* Fix: /m);
+  assert.match(result.stdout, /^review src\/b\.js:1 not-in-coverage: .* Fix: /m);
+  assert.doesNotMatch(result.stdout, /src\/a\.js:1 |README/);
+  assert.match(result.stdout, /^coverage: 1 uncovered-line, 1 not-in-coverage$/m);
+});
+
+test('coverage matches absolute Windows-style report paths and takes the report from the guide', () => {
+  const cwd = branch(COVERED_CHANGE, { guide: '## Get Ship Done\n\n- lcov: `out/lcov.info`\n' });
+  write(cwd, 'out/lcov.info', LCOV(`${git(cwd, 'rev-parse', '--show-toplevel')}/src/a.js`.replace(/\//g, '\\')));
+  assert.match(coverage(cwd).stdout, /^review src\/a\.js:2 uncovered-line: /m);
+});
+
+test('coverage fails on a report older than HEAD and on a missing report', () => {
+  const cwd = branch(COVERED_CHANGE);
+  write(cwd, 'coverage/lcov.info', LCOV());
+  const old = new Date('2020-01-01');
+  utimesSync(join(cwd, 'coverage/lcov.info'), old, old);
+  const stale = coverage(cwd);
+  assert.equal(stale.status, 1);
+  assert.match(stale.stderr, /older than HEAD.*Fix: /);
+  const missing = coverage(cwd, ['--lcov', 'nope.info']);
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /no coverage report at nope\.info.*Fix: /);
+});
+
+test('ship refuses an uncovered changed line when the guide has coverage, until it is kept', () => {
+  const guide = '## Get Ship Done\n\n- coverage: `npm run coverage`\n';
+  const run = shipRun({ 'src/a.js': 'export const a = 1;\nexport const b = 2;\n' }, { guide });
+  write(run.cwd, 'coverage/lcov.info', LCOV());
+  assertRefused(run, run.ship(), /^review src\/a\.js:2 uncovered-line: [\s\S]*gsd log s keep ok at=src\/a\.js:2 rule=uncovered-line/m);
+  const kept = shipRun({ 'src/a.js': 'export const a = 1;\nexport const b = 2;\n' }, { guide, lines: ['2026-11-01 keep ok at=src/a.js:2 rule=uncovered-line why=defensive-branch'] });
+  write(kept.cwd, 'coverage/lcov.info', LCOV());
+  const shipped = kept.ship();
+  assert.equal(shipped.status, 0, shipped.stderr);
+});
+
+test('changed prints the changed line ranges of source files, not tests or docs', () => {
+  const cwd = branch({ 'src/a.js': 'export const a = 1;\nexport const b = 2;\nexport const c = 3;\n', 'src/b.py': 'x = 1\n', 'src/a.test.js': 'test("b", () => {});\n', 'README.md': 'more\n' });
+  const result = gsd(['changed', '--base', 'main'], { cwd });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'src/a.js:2-3\nsrc/b.py:1-1\n');
+});
+
+const mutant = (line, status) => ({ id: `${line}${status}`, mutatorName: 'ConditionalExpression', replacement: 'true', status, location: { start: { line, column: 1 }, end: { line, column: 9 } } });
+const MUTATION_REPORT = (path = 'src/a.js') => JSON.stringify({ schemaVersion: '1', thresholds: { high: 80, low: 60 }, files: { [path]: { language: 'javascript', source: '', mutants: [mutant(1, 'Survived'), mutant(2, 'Survived'), mutant(2, 'Killed'), mutant(3, 'NoCoverage')] } } });
+const MUTATED_CHANGE = { 'src/a.js': 'export const a = 1;\nexport const b = 2;\nexport const c = 3;\n' };
+
+test('mutation lists a survived or uncovered mutant on a changed line', () => {
+  const cwd = branch(MUTATED_CHANGE, { guide: '## Get Ship Done\n\n- mutation-report: `out/mutation.json`\n' });
+  write(cwd, 'out/mutation.json', MUTATION_REPORT());
+  const result = gsd(['mutation', '--base', 'main'], { cwd });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^review src\/a\.js:2 survived-mutant: ConditionalExpression .* Fix: /m);
+  assert.match(result.stdout, /^review src\/a\.js:3 survived-mutant: .*no test runs it.* Fix: /m);
+  assert.doesNotMatch(result.stdout, /src\/a\.js:1 /);
+  assert.match(result.stdout, /^mutation: 2 survived-mutant$/m);
+});
+
+test('mutation fails on a report that is not mutation-testing-elements JSON', () => {
+  const cwd = branch(MUTATED_CHANGE);
+  write(cwd, 'reports/mutation/mutation.json', '{"results": []}');
+  const result = gsd(['mutation', '--base', 'main'], { cwd });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /mutation-testing-elements.*Fix: /);
+});
+
+test('ship refuses a survived mutant when the guide has mutate, until it is kept', () => {
+  const guide = '## Get Ship Done\n\n- mutate: `npx stryker run`\n';
+  const lines = ['2026-11-01 keep ok at=src/a.js:2 rule=survived-mutant why=equivalent-mutant'];
+  const run = shipRun(MUTATED_CHANGE, { guide, lines });
+  write(run.cwd, 'reports/mutation/mutation.json', MUTATION_REPORT());
+  assertRefused(run, run.ship(), /gsd log s keep ok at=src\/a\.js:3 rule=survived-mutant/);
+  assert.doesNotMatch(run.ship().stderr, /at=src\/a\.js:2 /);
 });
 
 const CLEAN_CHANGE = { 'src/a.js': 'export const a = 2;\n' };
@@ -905,7 +1051,7 @@ test('every gsd log call in the ship skill uses a known phase', () => {
 
 test('every gsd command the ship skill names exists in the script', () => {
   const named = [...SHIP_SKILL.matchAll(/`gsd ([a-z-]+)/g)].map((call) => call[1]);
-  for (const expected of ['lint', 'diff-check', 'config', 'features', 'ui-audit', 'summary']) assert.ok(named.includes(expected), `the ship skill never names gsd ${expected}`);
+  for (const expected of ['lint', 'diff-check', 'config', 'features', 'ui-audit', 'summary', 'deprecated', 'coverage', 'changed', 'mutation']) assert.ok(named.includes(expected), `the ship skill never names gsd ${expected}`);
   for (const name of named) assert.ok(COMMAND_NAMES.includes(name), `the ship skill names unknown command "gsd ${name}"`);
 });
 

@@ -58,12 +58,16 @@ Rules a machine can decide are checked by `scripts/gsd.mjs`, and every error nam
 
 | Command | Checks |
 |---|---|
-| `gsd log` | a run log line has its phase's required keys; writes `log.md` and a per-repo `history.log`. A `ship` line is refused until gsd's own evidence agrees: the diff check re-run against the intake base with each blocking finding fixed or accepted by the user and each review finding fixed or kept with a reason; the PR open at HEAD; every workflow run on HEAD green and `gate-first-pass` matching the first runs (read through `gh`); and, for Standard and Risky runs, a criterion line per built criterion, one tested criterion proven by breaking the code, and a cold review line |
+| `gsd log` | a run log line has its phase's required keys; writes `log.md` and a per-repo `history.log`. A `ship` line is refused until gsd's own evidence agrees: the diff check re-run against the intake base with each blocking finding fixed or accepted by the user and each review finding fixed or kept with a reason; the PR open at HEAD; every workflow run on HEAD green and `gate-first-pass` matching the first runs (read through `gh`); and, for Standard and Risky runs, a criterion line per built criterion, one tested criterion proven by breaking the code, and a cold review line; where the guide has `coverage` or `mutate`, each uncovered changed line and surviving mutant fixed or kept |
 | `gsd summary <slug>` | prints the trust record for the PR body: lane, diff-check with kept and accepted findings, cold review, gate first pass, and the criteria with their tests and proof |
 | `gsd lint <brief or plan>` | cards are complete, paths and patterns exist, no pattern is deprecated, every acceptance criterion is covered, no question is open |
-| `gsd diff-check --base <ref>` | no skipped, focused or deleted test; no new suppression or workaround comment; no planning file, stray file or Markdown outside the living docs. Other new comments and docs, unchanged comments next to changed code, and generic UI tokens on new UI lines, are listed for review |
+| `gsd diff-check --base <ref>` | no skipped, focused or deleted test; no new suppression or workaround comment; no planning file, stray file or Markdown outside the living docs; no new import of deprecated code (JS and TS relative, `@/` and `~/` alias, Python modules). Edits inside deprecated code, other new comments and docs, unchanged comments next to changed code, and generic UI tokens on new UI lines, are listed for review |
 | `gsd features --base <ref>` | prints the features a branch touches and their specs, from the project's feature map; lists source files no feature claims |
 | `gsd ui-audit [path ...]` | lists generic UI tokens (decorative gradients, glass, emoji, one-off values, removed focus rings, hype copy) in tracked screens, with a tally per rule, as the audit before an unslop |
+| `gsd deprecated` | lists each deprecated area with its file count and importers; marks one nothing imports `ready-to-delete` and one matching no file `stale-glob`; deletes nothing |
+| `gsd coverage --base <ref>` | lists changed source lines with zero hits in the lcov report and changed files missing from it; fails on a report older than HEAD |
+| `gsd changed --base <ref>` | prints changed line ranges of source files as `path:start-end`, to scope a mutation run |
+| `gsd mutation --base <ref>` | lists mutants that survived, or that no test ran, on changed lines, from a mutation-testing-elements JSON report |
 | `gsd config` | prints the project section as JSON |
 | `gsd stats` | card first-pass rate by level and builder, gate first-pass rate, outcomes, and escaped bugs per layer (deploy, release, post-release) with the checks they added |
 
@@ -86,7 +90,7 @@ Or write the `## Get Ship Done` section by hand in the project's `AGENTS.md` (or
 - docs: `docs/modules/**`, `docs/rules/**`
 ```
 
-Keys: `gate`, `gate-backup`, `preflight`, `precheck`, `selector`, `migration`, `pr-facts`, `tidy`, `subagent-text`, `tests`, `deprecated`, `docs`, `feature-map`, `verify`. `tests` adds to the built-in test file patterns. `deprecated` lists code no card may copy as its pattern. `docs` lists where a new Markdown file may be added; anywhere else it fails the diff check.
+Keys: `gate`, `gate-backup`, `preflight`, `precheck`, `selector`, `migration`, `pr-facts`, `tidy`, `subagent-text`, `tests`, `deprecated`, `docs`, `feature-map`, `verify`, `design`, `coverage`, `lcov`, `mutate`, `mutation-report`, `smoke`, `health`. `tests` adds to the built-in test file patterns. `deprecated` lists code no card may copy as its pattern and no new code may import. `coverage` and `mutate` name the commands whose reports (`lcov`, default `coverage/lcov.info`; `mutation-report`, default `reports/mutation/mutation.json`) ship then checks on changed lines. `smoke` and `health` name what a project's deploy skill runs after a release. `docs` lists where a new Markdown file may be added; anywhere else it fails the diff check.
 
 Without the section the skill finds the gate in the CI config and offers the setup skill.
 

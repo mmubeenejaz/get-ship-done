@@ -2,7 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 class Fail extends Error {}
@@ -128,12 +128,15 @@ function verifyShip(slug, dir, given) {
   const [ref, sha] = intake.given.base.split('@');
   const base = [`origin/${ref}`, ref, sha].find((candidate) => candidate && isCommit(candidate));
   if (!base) fail(`gsd log: ship refused, the intake base "${intake.given.base}" is not a commit git knows. Fix: git fetch, or log a new intake line whose base=<branch>@<sha> resolves.`);
-  const problems = [...diffProblems(slug, base, given, entries), ...criteriaProblems(slug, dir, intake.given.lane, entries), ...githubProblems(given)];
+  const settings = readConfig(repoRoot())?.values ?? {};
+  const measured = [...(settings.coverage ? coverageFindings(base, settings) : []), ...(settings.mutate ? mutationFindings(base, settings) : [])];
+  const problems = [...diffProblems(slug, base, given, entries, measured), ...criteriaProblems(slug, dir, intake.given.lane, entries), ...githubProblems(given)];
   if (problems.length > 0) fail(['gsd log: ship refused, nothing was written. Fix each problem, then log ship again:', ...capped(problems, REVIEW_LIMIT)].join('\n'));
 }
 
-function diffProblems(slug, base, given, entries) {
-  const { blocking, review } = diffFindings(base);
+function diffProblems(slug, base, given, entries, measured) {
+  const { blocking, review: found } = diffFindings(base);
+  const review = [...found, ...measured];
   const [kept, accepted] = [ofPhase(entries, 'keep'), ofPhase(entries, 'accept')];
   const named = (lines, finding) => lines.some(({ given: line }) => line.at === atOf(finding.where) && line.rule === finding.rule);
   const unaccepted = blocking.filter((finding) => !named(accepted, finding));
@@ -229,7 +232,7 @@ function parseFlags(args, names) {
 
 const repoRoot = (cwd = process.cwd()) => git(['rev-parse', '--show-toplevel'], cwd)?.trim() ?? cwd;
 
-export const CONFIG_KEYS = ['gate', 'gate-backup', 'preflight', 'precheck', 'selector', 'migration', 'pr-facts', 'tidy', 'subagent-text', 'tests', 'deprecated', 'docs', 'feature-map', 'verify', 'design'];
+export const CONFIG_KEYS = ['gate', 'gate-backup', 'preflight', 'precheck', 'selector', 'migration', 'pr-facts', 'tidy', 'subagent-text', 'tests', 'deprecated', 'docs', 'feature-map', 'verify', 'design', 'coverage', 'lcov', 'mutate', 'mutation-report', 'smoke', 'health'];
 const LIST_KEYS = ['tests', 'deprecated', 'docs'];
 const GUIDES = ['AGENTS.md', 'CLAUDE.md'];
 const SECTION = /^##\s+Get Ship Done\s*$/i;
@@ -499,17 +502,46 @@ function hunkLines(range) {
   return lines;
 }
 
-function branchRange(args) {
-  const { flags } = parseFlags(args, ['base']);
+function branchRange(args, options = []) {
+  const { flags } = parseFlags(args, ['base', ...options]);
   const base = flags.base;
   if (!base || !isCommit(base)) fail(`gsd: "${base ?? ''}" is not a known base ref. Fix: git fetch, then pass --base origin/<base branch>.`);
-  return { base, range: `${base}...HEAD` };
+  return { base, range: `${base}...HEAD`, flags };
+}
+
+const SCRIPT_FILE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro)$/i;
+const SCRIPT_EXTENSIONS = ['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'mts', 'cts', 'vue', 'svelte', 'astro'];
+const SCRIPT_SPECIFIER = /\b(?:from|import|require)\s*\(?\s*['"]([^'"]+)['"]/g;
+const PYTHON_IMPORT = /^\s*(?:from\s+(\.*)([\w.]*)\s+import\s+([\w\s,()*]+?)|import\s+([\w.\s,]+?))\s*(?:#.*)?$/;
+
+const withScriptFiles = (target) => [target, ...SCRIPT_EXTENSIONS.flatMap((extension) => [`${target}.${extension}`, `${target}/index.${extension}`])];
+
+function importTargets(path, line) {
+  if (SCRIPT_FILE.test(path)) {
+    const targets = [];
+    for (const [, specifier] of line.matchAll(SCRIPT_SPECIFIER)) {
+      if (specifier.startsWith('.')) targets.push(...withScriptFiles(posix.join(posix.dirname(path), specifier)));
+      else if (/^[@~]\//.test(specifier)) targets.push(...withScriptFiles(specifier.slice(2)), ...withScriptFiles(`src/${specifier.slice(2)}`));
+    }
+    return targets;
+  }
+  if (!path.endsWith('.py')) return [];
+  const match = line.match(PYTHON_IMPORT);
+  if (!match) return [];
+  const [, dots = '', from, names, plain] = match;
+  const asFiles = (target) => [`${target}/`, `${target}.py`];
+  const importedNames = (list) => list.replace(/[()]/g, '').split(',').map((name) => name.trim().split(/\s+/)[0]).filter((name) => name && name !== '*');
+  if (plain) return importedNames(plain).flatMap((name) => asFiles(name.replace(/\./g, '/')));
+  const anchor = dots ? posix.join(posix.dirname(path), ...Array(dots.length - 1).fill('..')) : '';
+  const module = posix.join(anchor || '.', from.replace(/\./g, '/'));
+  return [module, ...importedNames(names).map((name) => posix.join(module, name))].flatMap(asFiles);
 }
 
 function diffFindings(base) {
   const range = `${base}...HEAD`;
   const settings = readConfig(repoRoot())?.values ?? {};
   const isTest = testFileMatcher(settings);
+  const deprecated = settings.deprecated ?? [];
   const blocking = [];
   const review = [];
   const block = (where, rule, problem, fix) => blocking.push({ where, rule, text: `${problem}. Fix: ${fix}.` });
@@ -542,6 +574,10 @@ function diffFindings(base) {
     if (!added) {
       if (commentText(path, text) !== null) note(where, 'comment-near-change', 'an unchanged comment sits next to changed code', 'update it if the change makes it untrue, remove it if it no longer meets Comments, otherwise leave it');
       continue;
+    }
+    if (deprecated.length > 0) {
+      if (matchesAny(path, deprecated)) note(where, 'deprecated-edit', 'a line is added inside deprecated code', 'move the caller onto the code that replaces it, or delete this area if the change supersedes it; keep the edit only for a fix the area needs until then');
+      else if (importTargets(path, text).some((target) => matchesAny(target, deprecated))) block(where, 'deprecated-import', 'new code imports deprecated code', 'import the code that replaces it; if none exists yet, ask the user before adding a caller');
     }
     if (UI_FILE.test(path) && !isTest(path)) for (const { rule, problem, fix } of slopFindings(text)) note(where, rule, problem, fix);
     if (isTest(path) && SKIPPED_TEST.test(text)) block(where, 'test-skipped', 'a test is skipped', 'make it pass; if the test itself is wrong, say why in the PR and ask the user');
@@ -778,7 +814,140 @@ function uiAudit(paths) {
   return 0;
 }
 
-const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard, features, 'ui-audit': uiAudit, summary };
+const CODE_FILE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro|py|go|rb|rs|java|cs|kt|swift|php|c|h|cpp)$/i;
+
+function changedSourceLines(base, settings) {
+  const isTest = testFileMatcher(settings);
+  const changed = new Map();
+  for (const { added, path, line } of hunkLines(`${base}...HEAD`)) {
+    if (added && CODE_FILE.test(path) && !isTest(path)) changed.set(path, [...(changed.get(path) ?? []), line]);
+  }
+  return changed;
+}
+
+function freshReport(command, file, root) {
+  const full = resolve(root, file);
+  if (!existsSync(full)) fail(`gsd ${command}: no ${command} report at ${file}. Fix: run the project's ${command} command so it writes its report there, or name the file with the flag or the guide key.`);
+  const headTime = Number(git(['log', '-1', '--format=%ct', 'HEAD'], root)?.trim()) * 1000;
+  if (statSync(full).mtimeMs < headTime) fail(`gsd ${command}: the report ${file} is older than HEAD's commit, so it does not describe this code. Fix: rerun the project's ${command} command, then run this again.`);
+  return readFileSync(full, 'utf8');
+}
+
+function repoPath(path, root) {
+  const slashed = path.trim().replace(/\\/g, '/');
+  const prefix = `${root.replace(/\\/g, '/')}/`;
+  return (slashed.toLowerCase().startsWith(prefix.toLowerCase()) ? slashed.slice(prefix.length) : slashed).replace(/^\.\//, '');
+}
+
+function coverageFindings(base, settings, file = settings.lcov ?? 'coverage/lcov.info') {
+  const root = repoRoot();
+  const report = freshReport('coverage', file, root);
+  const hits = new Map();
+  let current = null;
+  for (const line of report.split(/\r?\n/)) {
+    if (line.startsWith('SF:')) {
+      const path = repoPath(line.slice(3), root);
+      current = hits.get(path) ?? new Map();
+      hits.set(path, current);
+    } else if (line.startsWith('DA:') && current) {
+      const [number, count] = line.slice(3).split(',');
+      current.set(Number(number), Number(count));
+    } else if (line === 'end_of_record') current = null;
+  }
+  const findings = [];
+  for (const [path, lines] of changedSourceLines(base, settings)) {
+    const counts = hits.get(path);
+    if (!counts) findings.push({ where: `${path}:${lines[0]}`, rule: 'not-in-coverage', text: 'a changed source file is missing from the coverage report. Fix: make the coverage run include it (its config, or a test that loads it), or keep it with the reason.' });
+    else for (const line of lines.filter((number) => counts.get(number) === 0)) findings.push({ where: `${path}:${line}`, rule: 'uncovered-line', text: 'no test runs this changed line. Fix: add a test that runs it, or keep it with the reason (such as a defensive branch no input reaches).' });
+  }
+  return findings;
+}
+
+function printFindings(command, findings, rules) {
+  process.stdout.write([...capped(findings.map((finding) => findingLine('review', finding)), REVIEW_LIMIT), `${command}: ${rules.map((rule) => `${findings.filter((finding) => finding.rule === rule).length} ${rule}`).join(', ')}`].join('\n') + '\n');
+  return 0;
+}
+
+function coverage(args) {
+  const { base, flags } = branchRange(args, ['lcov']);
+  return printFindings('coverage', coverageFindings(base, readConfig(repoRoot())?.values ?? {}, flags.lcov), ['uncovered-line', 'not-in-coverage']);
+}
+
+function changed(args) {
+  const lines = [];
+  for (const [path, numbers] of changedSourceLines(branchRange(args).base, readConfig(repoRoot())?.values ?? {})) {
+    let start = numbers[0];
+    numbers.forEach((number, i) => {
+      if (numbers[i + 1] === number + 1) return;
+      lines.push(`${path}:${start}-${number}`);
+      start = numbers[i + 1];
+    });
+  }
+  process.stdout.write(lines.map((line) => `${line}\n`).join(''));
+  return 0;
+}
+
+const MUTANT_ESCAPED = { Survived: 'survived: the tests still pass with this change', NoCoverage: 'survived: no test runs it' };
+
+function mutationFindings(base, settings, file = settings['mutation-report'] ?? 'reports/mutation/mutation.json') {
+  const root = repoRoot();
+  const text = freshReport('mutation', file, root);
+  const report = (() => {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
+  })();
+  if (!report?.files || typeof report.files !== 'object') fail(`gsd mutation: ${file} is not a mutation-testing-elements JSON report (no "files" object). Fix: have the mutation tool write its JSON report (Stryker: the "json" reporter), then run this again.`);
+  const files = new Map(Object.entries(report.files).map(([path, entry]) => [repoPath(path, root), entry.mutants ?? []]));
+  const findings = [];
+  for (const [path, lines] of changedSourceLines(base, settings)) {
+    for (const mutant of files.get(path) ?? []) {
+      const line = mutant.location?.start?.line;
+      if (!MUTANT_ESCAPED[mutant.status] || !lines.includes(line)) continue;
+      findings.push({ where: `${path}:${line}`, rule: 'survived-mutant', text: `${mutant.mutatorName} (${mutant.replacement ?? 'removed'}) ${MUTANT_ESCAPED[mutant.status]}. Fix: add or sharpen a test that fails on this mutant, or keep it with the reason (such as an equivalent mutant).` });
+    }
+  }
+  return findings;
+}
+
+function mutation(args) {
+  const { base, flags } = branchRange(args, ['report']);
+  return printFindings('mutation', mutationFindings(base, readConfig(repoRoot())?.values ?? {}, flags.report), ['survived-mutant']);
+}
+
+function deprecatedReport() {
+  const root = repoRoot();
+  const globs = readConfig(root)?.values.deprecated ?? [];
+  if (globs.length === 0) fail('gsd deprecated: the project guide has no deprecated globs. Fix: list the deprecated areas in its "## Get Ship Done" section as "- deprecated: `src/legacy/**`".');
+  const tracked = (git(['ls-files', '-z', '--full-name'], root) ?? '').split('\0').filter((path) => path && existsSync(join(root, path)));
+  const imports = [];
+  for (const path of tracked.filter((path) => SCRIPT_FILE.test(path) || path.endsWith('.py'))) {
+    readFileSync(join(root, path), 'utf8').split(/\r?\n/).forEach((text, index) => {
+      const targets = importTargets(path, text);
+      if (targets.length > 0) imports.push({ where: `${path}:${index + 1}`, path, targets });
+    });
+  }
+  const lines = [];
+  let ready = 0;
+  let stale = 0;
+  for (const glob of globs) {
+    const files = tracked.filter((path) => matchesAny(path, [glob]));
+    if (files.length === 0) {
+      stale++;
+      lines.push(`area ${glob} files=0 stale-glob`);
+      continue;
+    }
+    const importers = imports.filter(({ path, targets }) => !matchesAny(path, [glob]) && targets.some((target) => matchesAny(target, [glob])));
+    if (importers.length === 0) ready++;
+    lines.push(`area ${glob} files=${files.length} importers=${importers.length}${importers.length === 0 ? ' ready-to-delete' : ''}`, ...capped(importers.map(({ where }) => `  importer ${where}`), AUDIT_LIMIT));
+  }
+  process.stdout.write([...lines, `deprecated: ${globs.length} areas, ${ready} ready-to-delete, ${stale} stale-glob`].join('\n') + '\n');
+  return 0;
+}
+
+const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard, features, 'ui-audit': uiAudit, summary, deprecated: deprecatedReport, coverage, changed, mutation };
 export const COMMAND_NAMES = Object.keys(COMMANDS);
 const RUN_COMMAND = new RegExp(`gsd\\.mjs["']?\\s+(?:${COMMAND_NAMES.filter((name) => name !== 'guard').join('|')})\\b`);
 
