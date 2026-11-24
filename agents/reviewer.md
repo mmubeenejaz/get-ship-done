@@ -24,9 +24,11 @@ The brief.md or spec.md path, checkout path, base ref, and the trigger (why this
    - evidence: for each acceptance criterion, the test that would fail if it broke, or UNCOVERED
    - test integrity: skipped, focused or deleted tests, weakened assertions, mocks of the thing under test, snapshot updates hiding a behavior change
    - escape hatches: a new suppression (`eslint-disable`, `@ts-ignore` and the like), a comment that defers or defends a workaround, or a comment explaining a surprise in the project's own code that a rename, a type or an extraction would remove
+   - comments: a new comment that says what the code does, or falls outside the skill's allowed categories (license header, public API doc, external constraint, issue link, why a non-obvious choice was made); an existing comment the change makes untrue
+   - when the trigger is a risky one: a guard that looks removable (an authorization, tenant, ordering or idempotency check) with neither a test that fails without it nor a comment saying why it is there
    - scope the spec did not ask for, speculative abstractions, unapproved dependencies
 3. Every finding needs a concrete failure scenario (inputs and state leading to a wrong result). Drop any you cannot make concrete.
-4. BLOCKING: wrong behavior, a missed criterion, a security or data risk, a weakened or missing test for a criterion, an edited applied migration, an unapproved dependency, unasked scope, a new suppression or workaround comment. ADVISORY: judgement calls and smells, including a comment a rename would remove.
+4. BLOCKING: wrong behavior, a missed criterion, a security or data risk, a weakened or missing test for a criterion, an edited applied migration, an unapproved dependency, unasked scope, a new suppression or workaround comment, a new what-comment or one outside the allowed categories, a comment the change makes untrue, an unexplained and untested guard on a risky change. For a comment finding, the failure scenario is the reader it misleads or the code that already says it. ADVISORY: judgement calls and smells, including a comment a rename would remove.
 
 ## Output
 
