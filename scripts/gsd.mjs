@@ -232,7 +232,7 @@ function parseFlags(args, names) {
 
 const repoRoot = (cwd = process.cwd()) => git(['rev-parse', '--show-toplevel'], cwd)?.trim() ?? cwd;
 
-export const CONFIG_KEYS = ['gate', 'gate-backup', 'preflight', 'precheck', 'selector', 'migration', 'pr-facts', 'tidy', 'subagent-text', 'tests', 'deprecated', 'docs', 'feature-map', 'verify', 'design'];
+export const CONFIG_KEYS = ['gate', 'gate-backup', 'preflight', 'precheck', 'selector', 'migration', 'pr-facts', 'tidy', 'subagent-text', 'tests', 'deprecated', 'docs', 'feature-map', 'verify', 'design', 'coverage', 'lcov', 'mutate', 'mutation-report', 'smoke', 'health'];
 const LIST_KEYS = ['tests', 'deprecated', 'docs'];
 const GUIDES = ['AGENTS.md', 'CLAUDE.md'];
 const SECTION = /^##\s+Get Ship Done\s*$/i;

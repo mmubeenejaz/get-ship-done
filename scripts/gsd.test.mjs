@@ -549,10 +549,11 @@ const SETUP_DIR = join(HERE, '..', 'skills', 'setup');
 const readSetup = (...path) => readFileSync(join(SETUP_DIR, ...path), 'utf8');
 
 test('the setup skill is user-invoked and writes only section keys gsd config knows', () => {
+  assert.match(readSetup('SKILL.md'), /gsd deprecated/);
   const skill = readSetup('SKILL.md');
   assert.match(skill, /^disable-model-invocation: true$/m);
   const keys = [...skill.matchAll(/^- ([a-z][a-z-]*): /gm)].map((line) => line[1]);
-  assert.ok(['gate', 'docs', 'feature-map', 'design'].every((key) => keys.includes(key)), `found keys: ${keys}`);
+  assert.ok(['gate', 'docs', 'feature-map', 'design', 'coverage', 'lcov', 'mutate', 'mutation-report', 'smoke', 'health'].every((key) => keys.includes(key)), `found keys: ${keys}`);
   for (const key of keys) assert.ok(CONFIG_KEYS.includes(key), `the setup skill writes unknown key "${key}"`);
 });
 
@@ -1046,7 +1047,7 @@ test('every gsd log call in the ship skill uses a known phase', () => {
 
 test('every gsd command the ship skill names exists in the script', () => {
   const named = [...SHIP_SKILL.matchAll(/`gsd ([a-z-]+)/g)].map((call) => call[1]);
-  for (const expected of ['lint', 'diff-check', 'config', 'features', 'ui-audit', 'summary']) assert.ok(named.includes(expected), `the ship skill never names gsd ${expected}`);
+  for (const expected of ['lint', 'diff-check', 'config', 'features', 'ui-audit', 'summary', 'deprecated', 'coverage', 'changed', 'mutation']) assert.ok(named.includes(expected), `the ship skill never names gsd ${expected}`);
   for (const name of named) assert.ok(COMMAND_NAMES.includes(name), `the ship skill names unknown command "gsd ${name}"`);
 });
 
