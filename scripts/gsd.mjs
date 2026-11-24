@@ -510,9 +510,9 @@ function branchRange(args, options = []) {
 }
 
 const SCRIPT_FILE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro)$/i;
-const SCRIPT_EXTENSIONS = ['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'mts', 'cts', 'vue', 'svelte'];
+const SCRIPT_EXTENSIONS = ['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'mts', 'cts', 'vue', 'svelte', 'astro'];
 const SCRIPT_SPECIFIER = /\b(?:from|import|require)\s*\(?\s*['"]([^'"]+)['"]/g;
-const PYTHON_IMPORT = /^\s*(?:from\s+(\.*)([\w.]*)\s+import\s+([\w\s,()]+?)|import\s+([\w.]+))\s*(?:#.*)?$/;
+const PYTHON_IMPORT = /^\s*(?:from\s+(\.*)([\w.]*)\s+import\s+([\w\s,()*]+?)|import\s+([\w.\s,]+?))\s*(?:#.*)?$/;
 
 const withScriptFiles = (target) => [target, ...SCRIPT_EXTENSIONS.flatMap((extension) => [`${target}.${extension}`, `${target}/index.${extension}`])];
 
@@ -529,10 +529,12 @@ function importTargets(path, line) {
   const match = line.match(PYTHON_IMPORT);
   if (!match) return [];
   const [, dots = '', from, names, plain] = match;
-  if (plain) return [`${plain.replace(/\./g, '/')}/`, `${plain.replace(/\./g, '/')}.py`];
+  const asFiles = (target) => [`${target}/`, `${target}.py`];
+  const importedNames = (list) => list.replace(/[()]/g, '').split(',').map((name) => name.trim().split(/\s+/)[0]).filter((name) => name && name !== '*');
+  if (plain) return importedNames(plain).flatMap((name) => asFiles(name.replace(/\./g, '/')));
   const anchor = dots ? posix.join(posix.dirname(path), ...Array(dots.length - 1).fill('..')) : '';
   const module = posix.join(anchor || '.', from.replace(/\./g, '/'));
-  return [module, ...names.replace(/[()]/g, '').split(',').map((name) => name.trim().split(/\s+/)[0]).filter(Boolean).map((name) => posix.join(module, name))].flatMap((target) => [`${target}/`, `${target}.py`]);
+  return [module, ...importedNames(names).map((name) => posix.join(module, name))].flatMap(asFiles);
 }
 
 function diffFindings(base) {

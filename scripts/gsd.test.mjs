@@ -321,6 +321,9 @@ const DEPRECATED_IMPORTS = [
   ['a Python dotted import', 'app/main.py', 'from app.legacy.old import f'],
   ['a relative Python import', 'app/api/views.py', 'from ..legacy import old'],
   ['a Python package import with an alias', 'app/main.py', 'from app import legacy as old_code'],
+  ['a plain Python import with an alias', 'app/main.py', 'import app.legacy.old as old'],
+  ['a Python import list', 'app/main.py', 'import os, app.legacy.old'],
+  ['a Python star import', 'app/main.py', 'from app.legacy.old import *'],
 ];
 
 for (const [name, path, line] of DEPRECATED_IMPORTS) {
