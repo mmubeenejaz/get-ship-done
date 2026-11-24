@@ -241,7 +241,9 @@ export async function explore({ url, seed, seconds, steps, start, skip, browser:
 export function readTrace(file, fail) {
   try {
     const trace = JSON.parse(readFileSync(file, 'utf8'));
-    if (typeof trace.url === 'string' && Array.isArray(trace.actions) && trace.violation?.property) return trace;
+    const { origin } = new URL(trace.url);
+    const onOrigin = (action) => action.type !== 'goto' || new URL(action.url).origin === origin;
+    if (Array.isArray(trace.actions) && trace.actions.every(onOrigin) && trace.violation?.property) return trace;
   } catch {}
   return fail(`gsd explore: ${file} is not an explore trace. Fix: pass a .json trace that gsd explore wrote under its --out folder.`);
 }

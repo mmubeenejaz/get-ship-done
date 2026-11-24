@@ -1048,6 +1048,12 @@ async function exploreCommand(args) {
   const url = flags.url ?? settings.explore;
   if (!url) fail('gsd explore: no URL to explore. Fix: pass --url <local app url>, or set "- explore: <url>" in the guide\'s Get Ship Done section.');
   checkHost(url, settings['explore-hosts'] ?? [], fail);
+  const start = flags.start?.split(',').map((path) => path.trim()).filter(Boolean) ?? [];
+  const { origin } = new URL(url);
+  for (const route of start) {
+    if (new URL(route, url).origin !== origin) fail(`gsd explore: --start ${route} is not on ${origin}. Fix: pass paths on the explored app, such as /settings.`);
+  }
+  if (flags.seed !== undefined && !/^\d+$/.test(flags.seed)) fail(`gsd explore: --seed ${flags.seed} is not a whole number.`);
   const seed = flags.seed === undefined ? Math.floor(Math.random() * 1e9) : Number(flags.seed);
   const out = resolve(flags.out ?? (flags.slug ? join(runDir(flags.slug), 'explore') : join(tmpdir(), `gsd-explore-${seed}`)));
   const { steps, violations } = await explore({
@@ -1056,7 +1062,7 @@ async function exploreCommand(args) {
     seed,
     seconds: positiveNumber(flags.time, 'time') ?? EXPLORE_SECONDS,
     steps: positiveNumber(flags.steps, 'steps') ?? Infinity,
-    start: flags.start?.split(',').map((path) => path.trim()).filter(Boolean) ?? [],
+    start,
     skip: settings['explore-skip'] ?? [],
     out,
   });

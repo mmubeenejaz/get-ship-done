@@ -107,6 +107,19 @@ test('explore refuses a host that is not local unless the guide lists it', async
   assert.match(listed.stderr, /Playwright is not installed.*Fix: .*install/);
 });
 
+test('explore refuses start routes and trace steps on another origin, and a seed that is not a number', async () => {
+  const offOrigin = await explore(['--url', 'http://localhost:9/', '--start', '/a,https://example.com/'], { cwd: exploreProject().root });
+  assert.equal(offOrigin.status, 1);
+  assert.match(offOrigin.stderr, /https:\/\/example\.com\/ is not on http:\/\/localhost:9\. Fix: /);
+  const trace = JSON.stringify({ url: 'http://localhost:9/', seed: 1, actions: [{ type: 'goto', url: 'https://example.com/' }], violation: { property: 'page-error' } });
+  const replayed = await explore(['--replay', 'away.json'], { cwd: exploreProject({ files: { 'away.json': trace } }).root });
+  assert.equal(replayed.status, 1);
+  assert.match(replayed.stderr, /away\.json is not an explore trace/);
+  const seed = await explore(['--url', 'http://localhost:9/', '--seed', 'abc'], { cwd: exploreProject().root });
+  assert.equal(seed.status, 1);
+  assert.match(seed.stderr, /--seed abc is not a whole number/);
+});
+
 const traceOf = (stdout) => stdout.match(/^violation page-error .*\(trace (.+)\)$/m)?.[1];
 
 test('replay reproduces a recorded violation, and shrink keeps only the actions it needs', async () => {
