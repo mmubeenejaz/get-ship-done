@@ -615,7 +615,6 @@ function stats([repo = repoName()]) {
 }
 
 const SAME_COMMAND = '[^\\n;&|]*';
-const RUN_COMMAND = /gsd\.mjs["']?\s+(?:log|lint|diff-check|config|stats|features|ui-audit)\b/;
 const GH_API = '\\bgh(?:\\.exe)?\\s+api\\b[\\s\\S]*?';
 const MERGE = new RegExp(`\\bgh(?:\\.exe)?\\s+pr\\s+merge\\b|${GH_API}(?:/merge\\b|\\bmergePullRequest\\b)`);
 const READY = new RegExp(`\\bgh(?:\\.exe)?\\s+pr\\s+ready\\b(?!${SAME_COMMAND}--undo)|${GH_API}\\bmarkPullRequestReadyForReview\\b`);
@@ -715,6 +714,39 @@ function features(args) {
   process.stdout.write([...lines, `features: ${touched.length} touched, ${unmapped.length} unmapped`].join('\n') + '\n');
 }
 
+const counted = (count, noun) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+const lastByKey = (entries, key) => [...new Map(entries.map((entry) => [key(entry), entry])).values()];
+
+function summary([slug]) {
+  const entries = slug ? runEntries(slug) : [];
+  if (entries.length === 0) fail(`gsd summary: no log for run "${slug ?? ''}". Fix: run gsd summary <slug> from the project checkout, with the slug the run logs under.`);
+  const last = (phase) => entries.findLast((entry) => entry.phase === phase);
+  const logged = (phase) => entries.filter((entry) => entry.phase === phase);
+  const shown = (entry, read) => (entry ? read(entry) : 'not logged');
+  const ship = last('ship');
+  const finding = ({ given }) => `${given.at} ${given.rule}`;
+  const kept = lastByKey(logged('keep'), finding);
+  const accepted = lastByKey(logged('accept'), finding);
+  const criteria = lastByKey(logged('criterion'), (entry) => entry.result).sort((a, b) => a.result - b.result);
+  const lines = [
+    '## Trust record',
+    '',
+    '| Check | Result |',
+    '|---|---|',
+    `| Lane | ${shown(last('intake'), (entry) => entry.given.lane)} |`,
+    `| Diff-check | ${shown(ship, (entry) => entry.given['diff-check'])}; ${counted(kept.length, 'review finding')} kept, ${counted(accepted.length, 'blocking finding')} accepted by the user |`,
+    `| Cold review | ${shown(last('review'), (entry) => entry.result)} |`,
+    `| Gate first pass | ${shown(ship, (entry) => entry.given['gate-first-pass'])} |`,
+  ];
+  if (criteria.length > 0) {
+    lines.push('', '| Criterion | Test | Proven by breaking the code |', '|---|---|---|');
+    for (const { result, given } of criteria) lines.push(`| ${result} | ${given.test === 'none' ? 'none' : `\`${given.test}\``} | ${given.proven} |`);
+  }
+  if (kept.length > 0) lines.push('', 'Kept review findings:', ...kept.map(({ given }) => `- \`${given.at}\` ${given.rule}: ${given.why.replace(/-/g, ' ')}`));
+  if (accepted.length > 0) lines.push('', 'Blocking findings the user accepted:', ...accepted.map(({ given }) => `- \`${given.at}\` ${given.rule}`));
+  process.stdout.write(`${lines.join('\n')}\n`);
+}
+
 const AUDIT_LIMIT = 50;
 
 function uiAudit(paths) {
@@ -739,8 +771,9 @@ function uiAudit(paths) {
   return 0;
 }
 
-const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard, features, 'ui-audit': uiAudit };
+const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard, features, 'ui-audit': uiAudit, summary };
 export const COMMAND_NAMES = Object.keys(COMMANDS);
+const RUN_COMMAND = new RegExp(`gsd\\.mjs["']?\\s+(?:${COMMAND_NAMES.filter((name) => name !== 'guard').join('|')})\\b`);
 
 function main(argv) {
   const [name, ...args] = argv;

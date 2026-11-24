@@ -731,6 +731,61 @@ test('Risky ship of an early PR needs only the criteria its built cards cover', 
   assert.equal(run.ship().status, 0, run.log());
 });
 
+test('summary lists the trust record with criteria, tests and proof', () => {
+  const cwd = project();
+  const home = freshDir('home');
+  const log = [
+    '2026-11-01 intake ok lane=Standard base=main@abc',
+    '2026-11-01 note this note stays out of the summary',
+    '2026-11-01 criterion 2 test=none proven=no',
+    '2026-11-01 criterion 1 test=src/a.test.js proven=no',
+    '2026-11-01 criterion 1 test=src/a.test.js proven=yes',
+    '2026-11-01 keep ok at=src/a.js:1 rule=comment-added why=external-api-units',
+    '2026-11-01 accept ok at=src/a.test.js:4 rule=test-skipped by=user',
+    '2026-11-01 review changes',
+    '2026-11-02 ship done pr=5 gate-first-pass=fail diff-check=accepted',
+    '',
+  ];
+  write(home, 'proj/s/log.md', log.join('\n'));
+  const result = gsd(['summary', 's'], { cwd, home });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    '## Trust record',
+    '',
+    '| Check | Result |',
+    '|---|---|',
+    '| Lane | Standard |',
+    '| Diff-check | accepted; 1 review finding kept, 1 blocking finding accepted by the user |',
+    '| Cold review | changes |',
+    '| Gate first pass | fail |',
+    '',
+    '| Criterion | Test | Proven by breaking the code |',
+    '|---|---|---|',
+    '| 1 | `src/a.test.js` | yes |',
+    '| 2 | none | no |',
+    '',
+    'Kept review findings:',
+    '- `src/a.js:1` comment-added: external api units',
+    '',
+    'Blocking findings the user accepted:',
+    '- `src/a.test.js:4` test-skipped',
+  ]);
+});
+
+test('summary before the ship line says what is not logged yet', () => {
+  const home = freshDir('home');
+  write(home, 'proj/s/log.md', '2026-11-01 intake ok lane=Direct base=main@abc\n');
+  const result = gsd(['summary', 's'], { cwd: project(), home });
+  assert.match(result.stdout, /^\| Diff-check \| not logged; 0 review findings kept, 0 blocking findings accepted by the user \|$/m);
+  assert.match(result.stdout, /^\| Gate first pass \| not logged \|$/m);
+});
+
+test('summary of an unknown run exits 1 and names the fix', () => {
+  const result = gsd(['summary', 'nope'], { cwd: project() });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /nope.* Fix: /);
+});
+
 test('ship refuses a run without an intake line', () => {
   const run = shipRun({ 'src/a.js': 'export const a = 2;\n' });
   writeFileSync(join(run.home, 'proj', 's', 'log.md'), '');
