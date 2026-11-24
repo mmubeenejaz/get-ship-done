@@ -12,6 +12,7 @@ const GSD = join(HERE, 'gsd.mjs');
 const FIXTURE = join(HERE, 'fixtures', 'explore-app');
 const NODE_MODULES = join(HERE, '..', 'node_modules');
 const BROWSER = process.env.GSD_TEST_BROWSER ?? 'msedge';
+const SKIP_KEY = 'explore-skip';
 const SANDBOX = mkdtempSync(join(tmpdir(), 'gsd-explore-test-'));
 
 let server;
@@ -64,7 +65,7 @@ function explore(args, { cwd, home = join(SANDBOX, `home-${++counter}`) } = {}) 
 const run = (page, extra = [], options = {}) => explore(['--url', `${origin}/${page}`, '--browser', BROWSER, '--seed', '7', '--time', '20', '--steps', '25', '--out', join(SANDBOX, `out-${++counter}`), ...extra], options);
 
 test('explore reports an uncaught error from a planted button and never touches skipped controls', async () => {
-  const { root } = exploreProject({ guide: '- explore-skip: `.custom-skip`\n' });
+  const { root } = exploreProject({ guide: `- ${SKIP_KEY}: \`.custom-skip\`\n` });
   const result = await run('index.html', [], { cwd: root });
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stdout, /^violation page-error \/index\.html: .*planted fault/m);

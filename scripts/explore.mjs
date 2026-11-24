@@ -30,14 +30,18 @@ export function checkHost(url, allowed, fail) {
   }
 }
 
-function loadPlaywright(root, fail) {
+function projectModule(root, names) {
   const require = createRequire(join(root, 'package.json'));
-  for (const name of ['playwright', 'playwright-core']) {
+  for (const name of names) {
     try {
       return require(name);
     } catch {}
   }
-  return fail('gsd explore: Playwright is not installed in this project. Fix: install it as a dev dependency (npm install -D playwright-core, or the same with your package manager; under Yarn PnP use nodeLinker: node-modules), then run it again.');
+  return null;
+}
+
+function loadPlaywright(root, fail) {
+  return projectModule(root, ['playwright', 'playwright-core']) ?? fail('gsd explore: Playwright is not installed in this project. Fix: install it as a dev dependency (npm install -D playwright-core, or the same with your package manager; under Yarn PnP use nodeLinker: node-modules), then run it again.');
 }
 
 async function launch(playwright, channel, fail) {
@@ -112,10 +116,7 @@ function pageFaults() {
 async function tools({ root, channel, propertiesFile, fail }) {
   const playwright = loadPlaywright(root, fail);
   const properties = propertiesFile ? ((await import(pathToFileURL(resolve(root, propertiesFile)).href)).default ?? {}) : {};
-  let axe = null;
-  try {
-    axe = createRequire(join(root, 'package.json'))('@axe-core/playwright').default;
-  } catch {}
+  const axe = projectModule(root, ['@axe-core/playwright'])?.default ?? null;
   return { browser: await launch(playwright, channel, fail), properties, axe };
 }
 
