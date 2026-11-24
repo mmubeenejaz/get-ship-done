@@ -340,6 +340,7 @@ test('ui-audit lists slop in tracked UI files with a tally', () => {
     'src/App.tsx': '<div className="transition-all">\n  <span>Ready ✨</span>\n</div>\n',
     'src/notes.md': 'transition-all\n',
     'src/server.js': 'export const css = "transition-all";\n',
+    'src/App.test.tsx': 'render(<App label="Ready ✨" />);\n',
   });
   write(cwd, 'src/Scratch.tsx', '<div className="backdrop-blur" />\n');
   for (const args of [['src'], []]) {
@@ -347,7 +348,7 @@ test('ui-audit lists slop in tracked UI files with a tally', () => {
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.match(result.stdout, /^review src\/App\.tsx:1 ui-transition-all: .+\. Fix: /m);
     assert.match(result.stdout, /^review src\/App\.tsx:2 ui-emoji: /m);
-    assert.doesNotMatch(result.stdout, /Scratch|notes|server/);
+    assert.doesNotMatch(result.stdout, /Scratch|notes|server|App\.test/);
     assert.match(result.stdout, /^ui-audit rules: ui-emoji 1, ui-transition-all 1$/m);
     assert.match(result.stdout, /^ui-audit: 1 files, 2 findings$/m);
   }
@@ -376,6 +377,8 @@ const CLEAN_CASES = [
   ['a URL in code', { 'src/a.js': 'export const a = "https://example.com/x";\n' }, {}],
   ['slop words in Markdown', { 'docs/guide.md': `${LONG_DOC}Avoid bg-clip-text, transition-all and seamless copy.\n` }, {}],
   ['slop words in a script', { 'src/a.js': 'export const banned = ["transition-all", "backdrop-blur", "10K+"];\n' }, {}],
+  ['emoji in a UI test fixture', { 'src/Form.test.tsx': 'const label = "How do you sleep? 😴";\n' }, {}],
+  ['a programmatic focus target without an outline', { 'src/Summary.tsx': '<div ref={summary} tabIndex={-1} className="outline-none" />\n' }, {}],
   ['plain UI with tokens', { 'src/Footer.tsx': '<footer className="bg-primary text-sm font-bold uppercase">© 2026 <span className="animate-spin" /><a className="outline-none focus-visible:ring-2">Home</a></footer>\n' }, {}],
 ];
 
