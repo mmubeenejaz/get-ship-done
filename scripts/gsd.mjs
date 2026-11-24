@@ -2,7 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, posix } from 'node:path';
+import { basename, dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 class Fail extends Error {}
@@ -128,12 +128,15 @@ function verifyShip(slug, dir, given) {
   const [ref, sha] = intake.given.base.split('@');
   const base = [`origin/${ref}`, ref, sha].find((candidate) => candidate && isCommit(candidate));
   if (!base) fail(`gsd log: ship refused, the intake base "${intake.given.base}" is not a commit git knows. Fix: git fetch, or log a new intake line whose base=<branch>@<sha> resolves.`);
-  const problems = [...diffProblems(slug, base, given, entries), ...criteriaProblems(slug, dir, intake.given.lane, entries), ...githubProblems(given)];
+  const settings = readConfig(repoRoot())?.values ?? {};
+  const measured = settings.coverage ? coverageFindings(base, settings) : [];
+  const problems = [...diffProblems(slug, base, given, entries, measured), ...criteriaProblems(slug, dir, intake.given.lane, entries), ...githubProblems(given)];
   if (problems.length > 0) fail(['gsd log: ship refused, nothing was written. Fix each problem, then log ship again:', ...capped(problems, REVIEW_LIMIT)].join('\n'));
 }
 
-function diffProblems(slug, base, given, entries) {
-  const { blocking, review } = diffFindings(base);
+function diffProblems(slug, base, given, entries, measured) {
+  const { blocking, review: found } = diffFindings(base);
+  const review = [...found, ...measured];
   const [kept, accepted] = [ofPhase(entries, 'keep'), ofPhase(entries, 'accept')];
   const named = (lines, finding) => lines.some(({ given: line }) => line.at === atOf(finding.where) && line.rule === finding.rule);
   const unaccepted = blocking.filter((finding) => !named(accepted, finding));
@@ -499,11 +502,11 @@ function hunkLines(range) {
   return lines;
 }
 
-function branchRange(args) {
-  const { flags } = parseFlags(args, ['base']);
+function branchRange(args, options = []) {
+  const { flags } = parseFlags(args, ['base', ...options]);
   const base = flags.base;
   if (!base || !isCommit(base)) fail(`gsd: "${base ?? ''}" is not a known base ref. Fix: git fetch, then pass --base origin/<base branch>.`);
-  return { base, range: `${base}...HEAD` };
+  return { base, range: `${base}...HEAD`, flags };
 }
 
 const SCRIPT_FILE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro)$/i;
@@ -809,6 +812,65 @@ function uiAudit(paths) {
   return 0;
 }
 
+const CODE_FILE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro|py|go|rb|rs|java|cs|kt|swift|php|c|h|cpp)$/i;
+
+function changedSourceLines(base, settings) {
+  const isTest = testFileMatcher(settings);
+  const changed = new Map();
+  for (const { added, path, line } of hunkLines(`${base}...HEAD`)) {
+    if (added && CODE_FILE.test(path) && !isTest(path)) changed.set(path, [...(changed.get(path) ?? []), line]);
+  }
+  return changed;
+}
+
+function freshReport(command, file, root) {
+  const full = resolve(root, file);
+  if (!existsSync(full)) fail(`gsd ${command}: no ${command} report at ${file}. Fix: run the project's ${command} command so it writes its report there, or name the file with the flag or the guide key.`);
+  const headTime = Number(git(['log', '-1', '--format=%ct', 'HEAD'], root)?.trim()) * 1000;
+  if (statSync(full).mtimeMs < headTime) fail(`gsd ${command}: the report ${file} is older than HEAD's commit, so it does not describe this code. Fix: rerun the project's ${command} command, then run this again.`);
+  return readFileSync(full, 'utf8');
+}
+
+function repoPath(path, root) {
+  const slashed = path.trim().replace(/\\/g, '/');
+  const prefix = `${root.replace(/\\/g, '/')}/`;
+  return (slashed.toLowerCase().startsWith(prefix.toLowerCase()) ? slashed.slice(prefix.length) : slashed).replace(/^\.\//, '');
+}
+
+function coverageFindings(base, settings, file = settings.lcov ?? 'coverage/lcov.info') {
+  const root = repoRoot();
+  const report = freshReport('coverage', file, root);
+  const hits = new Map();
+  let current = null;
+  for (const line of report.split(/\r?\n/)) {
+    if (line.startsWith('SF:')) {
+      const path = repoPath(line.slice(3), root);
+      current = hits.get(path) ?? new Map();
+      hits.set(path, current);
+    } else if (line.startsWith('DA:') && current) {
+      const [number, count] = line.slice(3).split(',');
+      current.set(Number(number), Number(count));
+    } else if (line === 'end_of_record') current = null;
+  }
+  const findings = [];
+  for (const [path, lines] of changedSourceLines(base, settings)) {
+    const counts = hits.get(path);
+    if (!counts) findings.push({ where: `${path}:${lines[0]}`, rule: 'not-in-coverage', text: 'a changed source file is missing from the coverage report. Fix: make the coverage run include it (its config, or a test that loads it), or keep it with the reason.' });
+    else for (const line of lines.filter((number) => counts.get(number) === 0)) findings.push({ where: `${path}:${line}`, rule: 'uncovered-line', text: 'no test runs this changed line. Fix: add a test that runs it, or keep it with the reason (such as a defensive branch no input reaches).' });
+  }
+  return findings;
+}
+
+const ruleCounts = (findings, rules) => rules.map((rule) => `${findings.filter((finding) => finding.rule === rule).length} ${rule}`).join(', ');
+
+function coverage(args) {
+  const settings = readConfig(repoRoot())?.values ?? {};
+  const { base, flags } = branchRange(args, ['lcov']);
+  const findings = coverageFindings(base, settings, flags.lcov);
+  process.stdout.write([...capped(findings.map((finding) => findingLine('review', finding)), REVIEW_LIMIT), `coverage: ${ruleCounts(findings, ['uncovered-line', 'not-in-coverage'])}`].join('\n') + '\n');
+  return 0;
+}
+
 function deprecatedReport() {
   const root = repoRoot();
   const globs = readConfig(root)?.values.deprecated ?? [];
@@ -839,7 +901,7 @@ function deprecatedReport() {
   return 0;
 }
 
-const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard, features, 'ui-audit': uiAudit, summary, deprecated: deprecatedReport };
+const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard, features, 'ui-audit': uiAudit, summary, deprecated: deprecatedReport, coverage };
 export const COMMAND_NAMES = Object.keys(COMMANDS);
 const RUN_COMMAND = new RegExp(`gsd\\.mjs["']?\\s+(?:${COMMAND_NAMES.filter((name) => name !== 'guard').join('|')})\\b`);
 

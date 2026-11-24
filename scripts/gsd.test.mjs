@@ -1,7 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -712,6 +712,51 @@ test('ship refuses diff-check=pass when the user accepted every blocking finding
 test('ship refuses diff-check=accepted when nothing blocks', () => {
   const run = shipRun({ 'src/a.js': 'export const a = 2;\n' });
   assertRefused(run, run.ship({ diff: 'accepted' }), /nothing blocks.* Fix: .*diff-check=pass/);
+});
+
+const COVERED_CHANGE = { 'src/a.js': 'export const a = 1;\nexport const b = 2;\n', 'src/b.js': 'export const c = 3;\n', 'README.md': 'more\n' };
+const LCOV = (sourceFile = 'src/a.js') => `TN:\nSF:${sourceFile}\nDA:1,4\nDA:2,0\nend_of_record\n`;
+const coverage = (cwd, args = []) => gsd(['coverage', '--base', 'main', ...args], { cwd });
+
+test('coverage lists a changed line with zero hits and a changed file missing from the report', () => {
+  const cwd = branch(COVERED_CHANGE);
+  write(cwd, 'coverage/lcov.info', LCOV());
+  const result = coverage(cwd);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^review src\/a\.js:2 uncovered-line: .* Fix: /m);
+  assert.match(result.stdout, /^review src\/b\.js:1 not-in-coverage: .* Fix: /m);
+  assert.doesNotMatch(result.stdout, /src\/a\.js:1 |README/);
+  assert.match(result.stdout, /^coverage: 1 uncovered-line, 1 not-in-coverage$/m);
+});
+
+test('coverage matches absolute Windows-style report paths and takes the report from the guide', () => {
+  const cwd = branch(COVERED_CHANGE, { guide: '## Get Ship Done\n\n- lcov: `out/lcov.info`\n' });
+  write(cwd, 'out/lcov.info', LCOV(`${git(cwd, 'rev-parse', '--show-toplevel')}/src/a.js`.replace(/\//g, '\\')));
+  assert.match(coverage(cwd).stdout, /^review src\/a\.js:2 uncovered-line: /m);
+});
+
+test('coverage fails on a report older than HEAD and on a missing report', () => {
+  const cwd = branch(COVERED_CHANGE);
+  write(cwd, 'coverage/lcov.info', LCOV());
+  const old = new Date('2020-01-01');
+  utimesSync(join(cwd, 'coverage/lcov.info'), old, old);
+  const stale = coverage(cwd);
+  assert.equal(stale.status, 1);
+  assert.match(stale.stderr, /older than HEAD.*Fix: /);
+  const missing = coverage(cwd, ['--lcov', 'nope.info']);
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /no coverage report at nope\.info.*Fix: /);
+});
+
+test('ship refuses an uncovered changed line when the guide has coverage, until it is kept', () => {
+  const guide = '## Get Ship Done\n\n- coverage: `npm run coverage`\n';
+  const run = shipRun({ 'src/a.js': 'export const a = 1;\nexport const b = 2;\n' }, { guide });
+  write(run.cwd, 'coverage/lcov.info', LCOV());
+  assertRefused(run, run.ship(), /^review src\/a\.js:2 uncovered-line: [\s\S]*gsd log s keep ok at=src\/a\.js:2 rule=uncovered-line/m);
+  const kept = shipRun({ 'src/a.js': 'export const a = 1;\nexport const b = 2;\n' }, { guide, lines: ['2026-11-01 keep ok at=src/a.js:2 rule=uncovered-line why=defensive-branch'] });
+  write(kept.cwd, 'coverage/lcov.info', LCOV());
+  const shipped = kept.ship();
+  assert.equal(shipped.status, 0, shipped.stderr);
 });
 
 const CLEAN_CHANGE = { 'src/a.js': 'export const a = 2;\n' };
