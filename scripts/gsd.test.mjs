@@ -341,6 +341,30 @@ test('diff-check passes an import of current code next to deprecated code', () =
   assert.match(result.stdout, /^diff-check: 0 blocking, 0 review$/m);
 });
 
+test('deprecated lists each area with its importers, marks one with none ready to delete and deletes nothing', () => {
+  const cwd = project({
+    'AGENTS.md': '## Get Ship Done\n\n- deprecated: `src/legacy/**`, `app/legacy/**`, `old/**`\n',
+    ...LEGACY,
+    'src/legacy/y.js': "import { x } from './x.js';\n",
+    'src/a.js': "export const a = 1;\nimport { x } from './legacy/x.js';\n",
+    'app/main.py': 'import os\n',
+  });
+  const result = gsd(['deprecated'], { cwd });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^area src\/legacy\/\*\* files=2 importers=1$/m);
+  assert.match(result.stdout, /^ {2}importer src\/a\.js:2$/m);
+  assert.match(result.stdout, /^area app\/legacy\/\*\* files=1 importers=0 ready-to-delete$/m);
+  assert.match(result.stdout, /^area old\/\*\* files=0 stale-glob$/m);
+  assert.match(result.stdout, /^deprecated: 3 areas, 1 ready-to-delete, 1 stale-glob$/m);
+  assert.equal(git(cwd, 'status', '--porcelain'), '');
+});
+
+test('deprecated without a deprecated key names the fix', () => {
+  const result = gsd(['deprecated'], { cwd: project() });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /no deprecated globs.*Fix: /);
+});
+
 const FAR_FILE = (value) => `${SLASHES} Returns the total in cents.\n${'export const filler = 0;\n'.repeat(8)}export const total = ${value};\n`;
 
 test('diff-check leaves a comment far from changed code alone', () => {

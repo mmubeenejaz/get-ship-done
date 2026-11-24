@@ -809,7 +809,37 @@ function uiAudit(paths) {
   return 0;
 }
 
-const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard, features, 'ui-audit': uiAudit, summary };
+function deprecatedReport() {
+  const root = repoRoot();
+  const globs = readConfig(root)?.values.deprecated ?? [];
+  if (globs.length === 0) fail('gsd deprecated: the project guide has no deprecated globs. Fix: list the deprecated areas in its "## Get Ship Done" section as "- deprecated: `src/legacy/**`".');
+  const tracked = (git(['ls-files', '-z', '--full-name'], root) ?? '').split('\0').filter((path) => path && existsSync(join(root, path)));
+  const imports = [];
+  for (const path of tracked.filter((path) => SCRIPT_FILE.test(path) || path.endsWith('.py'))) {
+    readFileSync(join(root, path), 'utf8').split(/\r?\n/).forEach((text, index) => {
+      const targets = importTargets(path, text);
+      if (targets.length > 0) imports.push({ where: `${path}:${index + 1}`, path, targets });
+    });
+  }
+  const lines = [];
+  let ready = 0;
+  let stale = 0;
+  for (const glob of globs) {
+    const files = tracked.filter((path) => matchesAny(path, [glob]));
+    if (files.length === 0) {
+      stale++;
+      lines.push(`area ${glob} files=0 stale-glob`);
+      continue;
+    }
+    const importers = imports.filter(({ path, targets }) => !matchesAny(path, [glob]) && targets.some((target) => matchesAny(target, [glob])));
+    if (importers.length === 0) ready++;
+    lines.push(`area ${glob} files=${files.length} importers=${importers.length}${importers.length === 0 ? ' ready-to-delete' : ''}`, ...capped(importers.map(({ where }) => `  importer ${where}`), AUDIT_LIMIT));
+  }
+  process.stdout.write([...lines, `deprecated: ${globs.length} areas, ${ready} ready-to-delete, ${stale} stale-glob`].join('\n') + '\n');
+  return 0;
+}
+
+const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard, features, 'ui-audit': uiAudit, summary, deprecated: deprecatedReport };
 export const COMMAND_NAMES = Object.keys(COMMANDS);
 const RUN_COMMAND = new RegExp(`gsd\\.mjs["']?\\s+(?:${COMMAND_NAMES.filter((name) => name !== 'guard').join('|')})\\b`);
 
