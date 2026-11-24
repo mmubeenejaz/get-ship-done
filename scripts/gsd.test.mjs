@@ -313,3 +313,41 @@ test('diff-check rejects an unknown base ref and names the fix', () => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /nope.* Fix: /);
 });
+
+const HISTORY = [
+  'a 2026-11-01 intake ok lane=Standard base=origin/main@abc',
+  'a 2026-11-01 card T1 level=standard builder=fable first-pass=pass commit=1',
+  'a 2026-11-01 card T2 level=standard builder=fable first-pass=fail commit=2',
+  'a 2026-11-01 card T3 level=mechanical builder=haiku first-pass=pass commit=3',
+  'a 2026-11-01 note the gate needed one rerun',
+  'a 2026-11-02 ship done pr=5 gate-first-pass=pass diff-check=pass',
+  'a 2026-11-03 outcome merged pr=5',
+  'b 2026-11-04 intake ok lane=Risky base=origin/main@def',
+  'b 2026-11-05 ship done pr=6 gate-first-pass=fail diff-check=accepted',
+  'b 2026-11-06 outcome reverted pr=6',
+  'b 2026-11-07 ship pr=7',
+  'this line is broken',
+  '',
+].join('\n');
+
+test('stats reports first-pass rates, lanes, outcomes and unparsed lines', () => {
+  const home = freshDir('home');
+  write(home, 'proj/history.log', HISTORY);
+  const result = gsd(['stats', 'proj'], { home });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    'repo: proj',
+    'runs by lane: Risky 1, Standard 1',
+    'cards first-pass: mechanical/haiku 1/1 (100%), standard/fable 1/2 (50%)',
+    'gate first-pass: 1/2 (50%)',
+    'diff-check accepted: 1/2',
+    'outcomes: merged 1, closed 0, reverted 1',
+    'unparsed lines: 2',
+  ]);
+});
+
+test('stats uses the current repo and names the fix when there is no history', () => {
+  const result = gsd(['stats'], { cwd: project() });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /proj.* Fix: /);
+});

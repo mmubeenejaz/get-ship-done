@@ -56,12 +56,12 @@ export const PHASES = {
   next: { freeText: true },
 };
 
-function logLine(phase, rest) {
+function readEntry(phase, rest) {
   const rule = PHASES[phase];
   if (!rule) fail(`gsd log: unknown phase "${phase}". Fix: use one of ${Object.keys(PHASES).join(', ')}.`);
   if (rule.freeText) {
     if (rest.length === 0) fail(`gsd log: "${phase}" needs text. Fix: gsd log <slug> ${phase} "<text>".`);
-    return `${today()} ${phase} ${rest.join(' ')}`;
+    return { result: null, given: {} };
   }
   const [result, ...pairs] = rest;
   if (!result || result.includes('=')) fail(`gsd log: "${phase}" needs a result word before any key=value. Fix: gsd log <slug> ${phase} <result> [key=value ...].`);
@@ -76,12 +76,13 @@ function logLine(phase, rest) {
     if (!(key in given)) fail(`gsd log: "${phase}" is missing ${key}. Fix: add ${key}=<${check.hint}>.`);
     if (!check.test(given[key])) fail(`gsd log: ${key}=${given[key]} is not valid for "${phase}". Fix: use ${key}=<${check.hint}>.`);
   }
-  return [today(), phase, result, ...pairs].join(' ');
+  return { result, given };
 }
 
 function log([slug, phase, ...rest]) {
   if (!slug || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) fail('gsd log: the first argument is the run slug in kebab-case. Fix: gsd log <slug> <phase> <result> [key=value ...].');
-  const line = logLine(phase, rest);
+  readEntry(phase, rest);
+  const line = [today(), phase, ...rest].join(' ');
   const repoDir = join(home(), repoName());
   mkdirSync(join(repoDir, slug), { recursive: true });
   appendFileSync(join(repoDir, slug, 'log.md'), `${line}\n`);
@@ -340,7 +341,59 @@ function diffCheck(args) {
   return blocking.length > 0 ? 1 : 0;
 }
 
-const COMMANDS = { log, config, lint, 'diff-check': diffCheck };
+const percent = (part, whole) => `${part}/${whole} (${Math.round((part / whole) * 100)}%)`;
+const tally = (counts, key) => counts.set(key, (counts.get(key) ?? 0) + 1);
+const listed = (counts) => [...counts].sort(([a], [b]) => a.localeCompare(b)).map(([key, count]) => `${key} ${count}`).join(', ') || 'none';
+
+function stats([repo = repoName()]) {
+  const historyFile = join(home(), repo, 'history.log');
+  if (!existsSync(historyFile)) fail(`gsd stats: no history for "${repo}". Fix: runs record it with gsd log; pass the repo name if this is the wrong one.`);
+  const lanes = new Map();
+  const cards = new Map();
+  const outcomes = new Map([['merged', 0], ['closed', 0], ['reverted', 0]]);
+  const gate = { pass: 0, total: 0, accepted: 0 };
+  let unparsed = 0;
+  for (const line of readFileSync(historyFile, 'utf8').split(/\r?\n/).filter(Boolean)) {
+    const [, date, phase, ...rest] = line.split(' ');
+    let entry;
+    try {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date ?? '')) fail('no date');
+      entry = readEntry(phase, rest);
+    } catch (error) {
+      if (!(error instanceof Fail)) throw error;
+      unparsed++;
+      continue;
+    }
+    if (phase === 'intake') tally(lanes, entry.given.lane);
+    if (phase === 'outcome') tally(outcomes, entry.result);
+    if (phase === 'card') {
+      const key = `${entry.given.level}/${entry.given.builder}`;
+      const count = cards.get(key) ?? { pass: 0, total: 0 };
+      count.total++;
+      if (entry.given['first-pass'] === 'pass') count.pass++;
+      cards.set(key, count);
+    }
+    if (phase === 'ship') {
+      gate.total++;
+      if (entry.given['gate-first-pass'] === 'pass') gate.pass++;
+      if (entry.given['diff-check'] === 'accepted') gate.accepted++;
+    }
+  }
+  const cardRates = [...cards].sort(([a], [b]) => a.localeCompare(b)).map(([key, count]) => `${key} ${percent(count.pass, count.total)}`);
+  process.stdout.write(
+    [
+      `repo: ${repo}`,
+      `runs by lane: ${listed(lanes)}`,
+      `cards first-pass: ${cardRates.join(', ') || 'none'}`,
+      `gate first-pass: ${gate.total ? percent(gate.pass, gate.total) : 'none'}`,
+      `diff-check accepted: ${gate.accepted}/${gate.total}`,
+      `outcomes: ${['merged', 'closed', 'reverted'].map((key) => `${key} ${outcomes.get(key)}`).join(', ')}`,
+      `unparsed lines: ${unparsed}`,
+    ].join('\n') + '\n',
+  );
+}
+
+const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats };
 
 function main(argv) {
   const [name, ...args] = argv;
