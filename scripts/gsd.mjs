@@ -336,6 +336,7 @@ const UI_SLOP = [
   },
 ];
 const testFileMatcher = (settings) => (path) => TEST_FILE.test(path) || matchesAny(path, settings.tests ?? []);
+const capped = (lines, limit) => (lines.length > limit ? [...lines.slice(0, limit), `review (${lines.length - limit} more not shown)`] : lines);
 const slopFindings = (text) => UI_SLOP.filter(({ pattern, unless }) => pattern.test(text) && !unless?.test(text));
 const REVIEW_LIMIT = 30;
 const REWRITE_MIN_LINES = 40;
@@ -425,8 +426,7 @@ function diffCheck(args) {
     else note(where, 'comment-added', 'a new comment', 'keep it only for a license header, a public API doc, behavior forced by an external system, or a link for a constraint code cannot express; otherwise rename or restructure so the code says it');
   }
 
-  const shown = review.length > REVIEW_LIMIT ? [...review.slice(0, REVIEW_LIMIT), `review (${review.length - REVIEW_LIMIT} more not shown)`] : review;
-  process.stdout.write([...blocking, ...shown, `diff-check: ${blocking.length} blocking, ${review.length} review`].join('\n') + '\n');
+  process.stdout.write([...blocking, ...capped(review, REVIEW_LIMIT),`diff-check: ${blocking.length} blocking, ${review.length} review`].join('\n') + '\n');
   return blocking.length > 0 ? 1 : 0;
 }
 
@@ -603,8 +603,7 @@ function uiAudit(paths) {
       }
     });
   }
-  const shown = findings.length > AUDIT_LIMIT ? [...findings.slice(0, AUDIT_LIMIT), `review (${findings.length - AUDIT_LIMIT} more not shown)`] : findings;
-  process.stdout.write([...shown, `ui-audit rules: ${listed(counts)}`, `ui-audit: ${files.length} files, ${findings.length} findings`].join('\n') + '\n');
+  process.stdout.write([...capped(findings, AUDIT_LIMIT), `ui-audit rules: ${listed(counts)}`, `ui-audit: ${files.length} files, ${findings.length} findings`].join('\n') + '\n');
   return 0;
 }
 
