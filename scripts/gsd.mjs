@@ -61,10 +61,11 @@ function readEntry(phase, rest) {
   if (!rule) fail(`gsd log: unknown phase "${phase}". Fix: use one of ${Object.keys(PHASES).join(', ')}.`);
   if (rule.freeText) {
     if (rest.length === 0) fail(`gsd log: "${phase}" needs text. Fix: gsd log <slug> ${phase} "<text>".`);
+    if (rest.some((word) => /[\r\n]/.test(word))) fail(`gsd log: "${phase}" text must be one line. Fix: log each line with its own gsd log <slug> ${phase} "<text>".`);
     return { result: null, given: {} };
   }
   const [result, ...pairs] = rest;
-  if (!result || result.includes('=')) fail(`gsd log: "${phase}" needs a result word before any key=value. Fix: gsd log <slug> ${phase} <result> [key=value ...].`);
+  if (!result || result.includes('=') || /\s/.test(result)) fail(`gsd log: "${phase}" needs a result word before any key=value. Fix: gsd log <slug> ${phase} <result> [key=value ...].`);
   if (rule.result && !rule.result.test(result)) fail(`gsd log: "${phase}" result "${result}" is not valid. Fix: use ${rule.result.hint}.`);
   const given = {};
   for (const pair of pairs) {
@@ -237,7 +238,7 @@ function lint(args) {
     for (const number of covers?.value.match(/\d+/g) ?? []) covered.set(Number(number), { card, line: covers.line });
   }
 
-  const sources = [file, flags.criteria, join(dirname(file), 'spec.md')].filter(Boolean);
+  const sources = [flags.criteria, file, join(dirname(file), 'spec.md')].filter(Boolean);
   const criteria = sources.map(readCriteria).find((found) => found.length > 0) ?? [];
   if (criteria.length === 0) here(1, 'no-criteria', 'no numbered acceptance criteria were found', 'add a "## Acceptance criteria" section, or pass --criteria <spec.md>');
   else {
@@ -259,14 +260,15 @@ function lint(args) {
 }
 
 const TEST_FILE = /(^|\/)(__tests__|tests?|e2e|specs?)\/|\.(test|spec)\.[cm]?[jt]sx?$|_test\.(go|py|rb)$|(^|\/)test_[^/]+\.py$|Tests?\.(cs|java|kt)$/;
-const SKIPPED_TEST = /\b(?:it|test|describe|context)\.(?:skip|todo|fixme)\b|\bx(?:it|describe|test)\s*\(|@pytest\.mark\.skip|@unittest\.skip|\bt\.Skip(?:Now)?\(|@Ignore\b|@Disabled\b/;
-const FOCUSED_TEST = /\b(?:it|test|describe|context)\.only\b|\bf(?:it|describe)\s*\(/;
-const SUPPRESSION = /eslint-disable|@ts-(?:ignore|expect-error|nocheck)|\btype:\s*ignore\b|\bnoqa\b|\bnolint\b/;
+const SKIPPED_TEST = /\b(?:it|test|describe|context)(?:\.\w+)*\.(?:skip|skipIf|todo|fixme)\b|\bx(?:it|describe|test)\s*\(|\bskip:\s*(?:true|['"`])|\bthis\.skip\(|@pytest\.mark\.(?:skip|xfail)|\bpytest\.skip\(|@unittest\.skip|\bt\.Skip(?:f|Now)?\(|@Ignore\b|@Disabled\b/;
+const FOCUSED_TEST = /\b(?:it|test|describe|context)(?:\.\w+)*\.only\b|\bf(?:it|describe)\s*\(/;
+const SUPPRESSION = /(?:\/\/|\/\*|\x23|<!-{2}).*(?:eslint-disable|@ts-(?:ignore|expect-error|nocheck)|\btype:\s*ignore\b|\bnoqa\b|\bnolint\b)/;
+const PROSE_FILE = /\.(?:md|mdx|txt)$/i;
 const WORKAROUND = /\b(?:TODO|FIXME|HACK|XXX|workaround|temporary|temporarily|for now|do not remove|don't remove)\b/i;
 const PLANNING_FILE = /^(?:brief|spec|plan|notes?|todo|scratch|handover|handoff|summary)(?:[-_.][^/]*)?\.(?:md|txt)$/i;
 const STRAY_FILE = /\.(?:log|tmp|bak|orig|rej)$/i;
 const KEPT_DOC = /^(?:README|CHANGELOG)\.md$/i;
-const SLASH_COMMENTS = ['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'go', 'rs', 'java', 'cs', 'kt', 'swift', 'php', 'c', 'h', 'cpp', 'css', 'scss'];
+const SLASH_COMMENTS = ['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'mts', 'cts', 'vue', 'svelte', 'go', 'rs', 'java', 'cs', 'kt', 'swift', 'php', 'c', 'h', 'cpp', 'css', 'scss'];
 const HASH_COMMENTS = ['py', 'rb', 'sh', 'bash', 'ps1', 'yml', 'yaml', 'toml'];
 const REVIEW_LIMIT = 30;
 const REWRITE_MIN_LINES = 40;
@@ -289,10 +291,16 @@ function addedLines(range) {
   const added = [];
   let path = null;
   let lineNumber = 0;
+  let inHeader = false;
   for (const line of readDiff(['--unified=0', '--no-color', '-M', range]).split('\n')) {
-    if (line.startsWith('+++ ')) path = line.startsWith('+++ b/') ? line.slice(6) : null;
-    else if (line.startsWith('@@')) lineNumber = Number(line.match(/\+(\d+)/)[1]);
-    else if (line.startsWith('+') && path) added.push({ path, line: lineNumber++, text: line.slice(1) });
+    if (line.startsWith('diff --git ')) {
+      inHeader = true;
+      path = null;
+    } else if (inHeader && line.startsWith('+++ ')) path = line.startsWith('+++ b/') ? line.slice(6).replace(/\t$/, '') : null;
+    else if (line.startsWith('@@')) {
+      inHeader = false;
+      lineNumber = Number(line.match(/\+(\d+)/)[1]);
+    } else if (!inHeader && line.startsWith('+') && path) added.push({ path, line: lineNumber++, text: line.slice(1) });
   }
   return added;
 }
@@ -335,10 +343,13 @@ function diffCheck(args) {
     const where = `${path}:${line}`;
     if (isTest(path) && SKIPPED_TEST.test(text)) block(where, 'test-skipped', 'a test is skipped', 'make it pass; if the test itself is wrong, say why in the PR and ask the user');
     if (isTest(path) && FOCUSED_TEST.test(text)) block(where, 'test-focused', 'a focused test stops the rest of the file from running', 'remove the focus before committing');
+    if (!PROSE_FILE.test(path) && SUPPRESSION.test(text)) {
+      block(where, 'suppression-added', 'a lint or type check is switched off', 'fix what the rule reports; if the rule is wrong here, ask the user');
+      continue;
+    }
     const comment = commentText(path, text);
     if (comment === null) continue;
-    if (SUPPRESSION.test(comment)) block(where, 'suppression-added', 'a lint or type check is switched off', 'fix what the rule reports; if the rule is wrong here, ask the user');
-    else if (WORKAROUND.test(comment)) block(where, 'workaround-comment', 'a comment defers or defends a workaround', 'fix the cause now, or stop and report it; encode a "do not remove" claim as a type, test or lint');
+    if (WORKAROUND.test(comment)) block(where, 'workaround-comment', 'a comment defers or defends a workaround', 'fix the cause now, or stop and report it; encode a "do not remove" claim as a type, test or lint');
     else note(where, 'comment-added', 'a new comment', 'keep it only for a license header, a public API doc, behavior forced by an external system, or a link for a constraint code cannot express; otherwise rename or restructure so the code says it');
   }
 
@@ -401,10 +412,15 @@ function stats([repo = repoName()]) {
 
 const SAME_COMMAND = '[^\\n;&|]*';
 const RUN_COMMAND = /gsd\.mjs["']?\s+(?:log|lint|diff-check|config|stats|features)\b/;
-const MERGE = new RegExp(`\\bgh\\s+pr\\s+merge\\b|\\bgh\\s+api\\b${SAME_COMMAND}/merge\\b`);
-const READY = new RegExp(`\\bgh\\s+pr\\s+ready\\b(?!${SAME_COMMAND}--undo)`);
-const NO_VERIFY = new RegExp(`\\bgit\\b${SAME_COMMAND}\\s--no-verify\\b`);
-const PUSH = /\bgit(?:\s+(?:-[Cc]\s+\S+|--?[\w-]+(?:=\S+)?))*\s+push\b([^\n;&|]*)/g;
+const GH_API = '\\bgh(?:\\.exe)?\\s+api\\b[\\s\\S]*?';
+const MERGE = new RegExp(`\\bgh(?:\\.exe)?\\s+pr\\s+merge\\b|${GH_API}(?:/merge\\b|\\bmergePullRequest\\b)`);
+const READY = new RegExp(`\\bgh(?:\\.exe)?\\s+pr\\s+ready\\b(?!${SAME_COMMAND}--undo)|${GH_API}\\bmarkPullRequestReadyForReview\\b`);
+const USES_GIT = /\bgit(?:\.exe)?\b/;
+const NO_VERIFY_FLAG = /(?:^|\s)--no-verify\b/;
+const NO_VERIFY_ALIAS = new RegExp(`\\bcommit\\b${SAME_COMMAND}?\\s-[a-mo-zA-Z]*n[a-zA-Z]*(?=\\s|$)`);
+const PUSH = /\bgit(?:\.exe)?(?:\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)|--?[\w-]+(?:=\S+)?))*\s+push\b([^\n;&|]*)/g;
+const PUSHES_EVERY_BRANCH = /\s--(?:all|mirror)\b/;
+const LINE_CONTINUATION = /[\\`]\r?\n/g;
 const MARKER_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 function pushesToBase(command, cwd) {
@@ -414,6 +430,7 @@ function pushesToBase(command, cwd) {
   const bases = remoteHead ? [remoteHead.replace(/^[^/]+\//, '')] : ['main', 'master'];
   const current = git(['rev-parse', '--abbrev-ref', 'HEAD'], cwd)?.trim();
   return pushes.some(([, tail]) => {
+    if (PUSHES_EVERY_BRANCH.test(tail)) return true;
     const [, ...refspecs] = tail.split(/\s+/).filter((word) => word && !word.startsWith('-'));
     if (refspecs.length === 0) return bases.includes(current);
     return refspecs.some((refspec) => {
@@ -425,8 +442,9 @@ function pushesToBase(command, cwd) {
 
 const usersDecision = (action) => `Get Ship Done hard limit: ${action} is the user's decision. Approve only if you asked for it in this conversation.`;
 
-function decide(command, cwd) {
-  if (NO_VERIFY.test(command)) return ['deny', "Get Ship Done hard limit: --no-verify skips the project's hooks. Fix: make the hook pass, or report the failing hook to the user."];
+function decide(rawCommand, cwd) {
+  const command = rawCommand.replace(LINE_CONTINUATION, ' ');
+  if (USES_GIT.test(command) && (NO_VERIFY_FLAG.test(command) || NO_VERIFY_ALIAS.test(command))) return ['deny', "Get Ship Done hard limit: --no-verify skips the project's hooks. Fix: make the hook pass, or report the failing hook to the user."];
   if (MERGE.test(command)) return ['ask', usersDecision('merging a pull request')];
   if (READY.test(command)) return ['ask', usersDecision('marking a pull request ready')];
   if (pushesToBase(command, cwd)) return ['ask', usersDecision('pushing to the base branch')];

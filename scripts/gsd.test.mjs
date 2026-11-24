@@ -268,6 +268,14 @@ const BLOCKING_CASES = [
   ['a deleted test file', {}, { remove: ['src/a.test.js'] }, /^block\s+src\/a\.test\.js test-deleted: /m],
   ['a lint suppression', { 'src/a.js': SUPPRESSION }, {}, /^block\s+src\/a\.js:1 suppression-added: /m],
   ['a trailing type suppression', { 'tool.py': PY_SUPPRESSION }, {}, /^block\s+tool\.py:1 suppression-added: /m],
+  ['a suppression in a trailing block comment', { 'src/a.ts': `foo(); /* ${hiddenFromOwnDiffCheck('eslint', '-disable-line')} no-console */\n` }, {}, /^block\s+src\/a\.ts:1 suppression-added: /m],
+  ['a suppression in an unlisted extension', { 'src/a.mts': `${SLASHES} ${hiddenFromOwnDiffCheck('@ts-', 'nocheck')}\n` }, {}, /^block\s+src\/a\.mts:1 suppression-added: /m],
+  ['a suppression without a space after the hash', { 'tool.py': `x = f()  ${HASH}${hiddenFromOwnDiffCheck('no', 'qa')}\n` }, {}, /^block\s+tool\.py:1 suppression-added: /m],
+  ['a test skipped through its options', { 'src/a.test.js': `test("a", { ${hiddenFromOwnDiffCheck('skip', ': true')} }, () => {});\n` }, {}, /^block\s+src\/a\.test\.js:1 test-skipped: /m],
+  ['a conditionally skipped test', { 'src/a.test.js': `${hiddenFromOwnDiffCheck('it', '.', 'skipIf')}(true)("a", () => {});\n` }, {}, /^block\s+src\/a\.test\.js:1 test-skipped: /m],
+  ['a chained skip', { 'src/a.test.js': `${hiddenFromOwnDiffCheck('it', '.concurrent.', 'skip')}("a", () => {});\n` }, {}, /^block\s+src\/a\.test\.js:1 test-skipped: /m],
+  ['a Go skip with a format', { 'pkg/a_test.go': `\t${hiddenFromOwnDiffCheck('t.', 'Skipf')}("later")\n` }, {}, /^block\s+pkg\/a_test\.go:1 test-skipped: /m],
+  ['an expected-failure mark', { 'tests/test_a.py': `${hiddenFromOwnDiffCheck('@pytest.mark.', 'xfail')}\n` }, {}, /^block\s+tests\/test_a\.py:1 test-skipped: /m],
   ['a workaround comment', { 'src/a.js': `${SLASHES} ${LATER} tidy this later\nexport const a = 1;\n` }, {}, /^block\s+src\/a\.js:1 workaround-comment: /m],
   ['a "for now" comment', { 'src/a.js': `export const a = 2; ${SLASHES} fine for now\n` }, {}, /^block\s+src\/a\.js:1 workaround-comment: /m],
   ['a planning artifact', { 'docs/PLAN.md': '# Plan\n' }, {}, /^block\s+docs\/PLAN\.md planning-artifact: /m],
@@ -481,10 +489,96 @@ test('no log format in the ship skill is written by hand', () => {
   assert.doesNotMatch(SHIP_SKILL, /`<date> /);
 });
 
-for (const [name, input] of [['malformed', 'not json'], ['empty', '{}']]) {
-  test(`guard lets the command through on ${name} hook input`, () => {
-    const result = gsd(['guard'], { input });
-    assert.equal(result.status, 0);
-    assert.equal(result.stdout, '');
+test('guard lets the command through on empty hook input', () => {
+  const result = gsd(['guard'], { input: '{}' });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, '');
+});
+
+test('guard lets the command through on malformed hook input and reports it', () => {
+  const result = gsd(['guard'], { input: 'not json' });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, '');
+  assert.match(result.stderr, /gsd guard: let the command through/);
+});
+
+const ASK_FROM_A_FEATURE_BRANCH = [
+  'gh api \\\n  --method PUT \\\n  repos/o/r/pulls/5/merge',
+  'gh api -f commit_title="a & b" -X PUT repos/o/r/pulls/5/merge',
+  "gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'",
+  'gh.exe pr merge 5',
+  'git push \\\n  origin main',
+  'git -C "E:/my repo" push origin main',
+  'git push --all origin',
+  'git push --mirror',
+];
+
+for (const command of ASK_FROM_A_FEATURE_BRANCH) {
+  test(`guard asks from a feature branch before: ${JSON.stringify(command)}`, () => {
+    const { decision } = guard(command, runSession({ branch: 'work' }));
+    assert.equal(decision?.permissionDecision, 'ask');
   });
 }
+
+const DENY_COMMANDS = [
+  'git commit -m "$(cat <<\'EOF\'\nfix: thing\nEOF\n)" --no-verify',
+  'git commit -m "fix: a; b" --no-verify',
+  'git commit -n -m x',
+  'git commit -anm x',
+];
+
+for (const command of DENY_COMMANDS) {
+  test(`guard denies: ${JSON.stringify(command)}`, () => {
+    const { decision } = guard(command, runSession({ branch: 'work' }));
+    assert.equal(decision?.permissionDecision, 'deny');
+  });
+}
+
+test('guard does not read a commit message flag as the no-verify alias', () => {
+  assert.equal(guard('git commit -m "x"', runSession({ branch: 'work' })).stdout, '');
+});
+
+const REJECTED_LOG_LINES = [
+  [['bogus', 'ok'], /unknown phase "bogus"/],
+  [['card', 'T1', 'level=standard', 'builder=fable', 'first-pass=maybe', 'commit=abc'], /first-pass=maybe.*pass\|fail/],
+  [['card', 'one', 'level=standard', 'builder=fable', 'first-pass=pass', 'commit=abc'], /result "one"/],
+  [['intake', 'ok', 'lane=Fast', 'base=main'], /lane=Fast.*Direct\|Standard\|Risky/],
+  [['intake', 'ok', 'lane=Risky'], /missing base/],
+  [['ship', 'done', 'pr=5', 'gate-first-pass=pass'], /missing diff-check.*pass\|accepted/],
+  [['ship', 'done', 'pr=five', 'gate-first-pass=pass', 'diff-check=pass'], /pr=five/],
+  [['outcome', 'merged'], /missing pr/],
+  [['outcome', 'landed', 'pr=5'], /result "landed".*merged\|closed\|reverted/],
+  [['gate', 'two words'], /result/],
+  [['note', 'line one\nline two'], /one line/],
+  [['note'], /needs text/],
+];
+
+for (const [args, expected] of REJECTED_LOG_LINES) {
+  test(`log rejects ${JSON.stringify(args)} and writes nothing`, () => {
+    const home = freshDir('home');
+    const result = gsd(['log', 's', ...args], { cwd: project(), home });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, expected);
+    assert.match(result.stderr, / Fix: /);
+    assert.equal(existsSync(join(home, 'proj')), false);
+  });
+}
+
+test('lint prefers --criteria over the document\'s own criteria', () => {
+  const cwd = lintProject();
+  const dir = freshDir('run');
+  writeFileSync(join(dir, 'other.md'), ['## Acceptance criteria', '', '1. Only one.', ''].join('\n'));
+  writeFileSync(join(dir, 'brief.md'), BRIEF);
+  const result = gsd(['lint', join(dir, 'brief.md'), '--criteria', join(dir, 'other.md')], { cwd });
+  assert.match(result.stdout, /covers-unknown: .*criterion 2/);
+});
+
+test('diff-check checks every file after an added line that looks like a diff header', () => {
+  const cwd = branch({ 'a.txt': '++ b/not-a-header\n', 'src/z.js': SUPPRESSION });
+  assert.match(diffCheck(cwd).stdout, /^block\s+src\/z\.js:1 suppression-added: /m);
+});
+
+test('diff-check reads a test path that contains a space', () => {
+  const cwd = branch({ 'src/my thing.test.js': SKIP_CALL });
+  assert.match(diffCheck(cwd).stdout, /^block\s+src\/my thing\.test\.js:1 test-skipped: /m);
+});
