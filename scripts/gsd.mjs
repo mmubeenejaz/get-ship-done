@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -56,6 +56,7 @@ export const PHASES = {
   accept: { result: oneOf(['ok']), keys: { at: ANY, rule: KEBAB, by: oneOf(['user']) } },
   ship: { keys: { pr: DIGITS, 'gate-first-pass': oneOf(PASS_FAIL), 'diff-check': oneOf(['pass', 'accepted']) } },
   handoff: {},
+  context: { result: oneOf(['high']), keys: { tokens: DIGITS } },
   outcome: { result: oneOf(['merged', 'closed', 'reverted']), keys: { pr: DIGITS } },
   escape: { result: oneOf(ESCAPE_LAYERS), keys: { pr: DIGITS, check: KEBAB } },
   explore: { result: oneOf(PASS_FAIL), keys: { steps: DIGITS, violations: DIGITS, seed: DIGITS, head: ANY } },
@@ -97,7 +98,7 @@ function parseLine([date, phase, ...rest]) {
   }
 }
 
-const runDir = (slug) => join(home(), repoName(), slug);
+const runDir = (slug, cwd) => join(home(), repoName(cwd), slug);
 
 const ofPhase = (entries, phase) => entries.filter((entry) => entry.phase === phase);
 
@@ -133,8 +134,9 @@ function verifyShip(slug, dir, given) {
   const base = [`origin/${ref}`, ref, sha].find((candidate) => candidate && isCommit(candidate));
   if (!base) fail(`gsd log: ship refused, the intake base "${intake.given.base}" is not a commit git knows. Fix: git fetch, or log a new intake line whose base=<branch>@<sha> resolves.`);
   const settings = readConfig(repoRoot())?.values ?? {};
-  const measured = [...(settings.coverage ? coverageFindings(base, settings) : []), ...(settings.mutate ? mutationFindings(base, settings) : [])];
-  const problems = [...diffProblems(slug, base, given, entries, measured), ...criteriaProblems(slug, dir, intake.given.lane, entries), ...githubProblems(given)];
+  const explored = settings.explore ? exploreEvidence(slug, dir, base, settings, entries) : { problems: [], findings: [] };
+  const measured = [...(settings.coverage ? coverageFindings(base, settings) : []), ...(settings.mutate ? mutationFindings(base, settings) : []), ...explored.findings];
+  const problems = [...explored.problems, ...diffProblems(slug, base, given, entries, measured), ...criteriaProblems(slug, dir, intake.given.lane, entries), ...githubProblems(given)];
   if (problems.length > 0) fail(['gsd log: ship refused, nothing was written. Fix each problem, then log ship again:', ...capped(problems, REVIEW_LIMIT)].join('\n'));
 }
 
@@ -154,6 +156,21 @@ function diffProblems(slug, base, given, entries, measured) {
     problems.push(`${findingLine('review', finding)}\n  Or keep it: gsd log ${slug} keep ok at=${atOf(finding.where)} rule=${finding.rule} why=<kebab-case-reason>.`);
   }
   return problems;
+}
+
+function exploreEvidence(slug, dir, base, settings, entries) {
+  const isTest = testFileMatcher(settings);
+  const changesUi = (range) => readDiff(['--name-only', '--no-renames', range]).split('\n').some((path) => UI_FILE.test(path) && !isTest(path));
+  if (!changesUi(`${base}...HEAD`)) return { problems: [], findings: [] };
+  const rerun = `run the app locally, then gsd explore --slug ${slug} (--start with the routes gsd features prints), and log ship again`;
+  const explore = entries.findLast((entry) => entry.phase === 'explore');
+  if (!explore) return { problems: [`UI files changed but no explore line. Fix: ${rerun}.`], findings: [] };
+  const { head } = explore.given;
+  if (!isCommit(head) || changesUi(`${head}..HEAD`)) return { problems: [`explore ran on ${short(head)}, and UI files changed since. Fix: ${rerun}.`], findings: [] };
+  if (explore.result === 'pass') return { problems: [], findings: [] };
+  const file = join(dir, EXPLORE_FINDINGS);
+  if (!existsSync(file)) return { problems: [`the explore line failed but ${file} is missing, so its violations are unknown. Fix: ${rerun}.`], findings: [] };
+  return { problems: [], findings: JSON.parse(readFileSync(file, 'utf8')) };
 }
 
 const coveredNumbers = (card) => card.fields.Covers?.value.match(/\d+/g)?.map(Number) ?? [];
@@ -672,6 +689,9 @@ const PUSH = /\bgit(?:\.exe)?(?:\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)|--?[\w-]+(
 const PUSHES_EVERY_BRANCH = /\s--(?:all|mirror)\b/;
 const LINE_CONTINUATION = /[\\`]\r?\n/g;
 const MARKER_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const HANDOFF_TOKENS = 200000;
+const TRANSCRIPT_TAIL_BYTES = 4 * 1024 * 1024;
+const CHECKPOINT = /gsd\.mjs["']?\s+log\s+([a-z0-9][a-z0-9-]*)\s+(?:ship|next|(?:design|clarify)\s+done)\b/;
 
 function pushesToBase(command, cwd) {
   const pushes = [...command.matchAll(PUSH)];
@@ -711,6 +731,40 @@ function markSession(marker) {
   writeFileSync(marker, '');
 }
 
+function contextTokens(transcript) {
+  const size = statSync(transcript).size;
+  const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
+  const buffer = Buffer.alloc(length);
+  const file = openSync(transcript, 'r');
+  try {
+    readSync(file, buffer, 0, length, size - length);
+  } finally {
+    closeSync(file);
+  }
+  for (const line of buffer.toString('utf8').split('\n').reverse()) {
+    try {
+      const entry = JSON.parse(line);
+      const usage = entry.message?.usage;
+      if (entry.type === 'assistant' && !entry.isSidechain && usage) return (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+    } catch {}
+  }
+  return 0;
+}
+
+const thousands = (tokens) => `${Math.round(tokens / 1000)}k`;
+
+function handoffContext(command, input) {
+  const slug = command.match(CHECKPOINT)?.[1];
+  if (!slug || typeof input.transcript_path !== 'string' || !existsSync(input.transcript_path)) return null;
+  const tokens = contextTokens(input.transcript_path);
+  if (tokens <= HANDOFF_TOKENS) return null;
+  const cwd = input.cwd ?? process.cwd();
+  const dir = runDir(slug, cwd);
+  mkdirSync(dir, { recursive: true });
+  appendFileSync(join(dir, 'log.md'), `${today()} context high tokens=${tokens}\n`);
+  return `Get Ship Done hand-off: this session's context is about ${thousands(tokens)} tokens, above the ${thousands(HANDOFF_TOKENS)} hand-off threshold, at a checkpoint of run ${slug}. After this command, commit and push, make sure the log ends with a next line, then start a fresh session (start_session, context "fresh", its own worktree on the branch) whose brief is "/get-ship-done:ship resume ${slug}" plus the run folder ${dir}, log it with gsd log ${slug} handoff started session=<name>, tell the user in one line, and stop working here.`;
+}
+
 function guard() {
   try {
     const input = JSON.parse(readFileSync(0, 'utf8'));
@@ -720,9 +774,10 @@ function guard() {
     if (RUN_COMMAND.test(command)) markSession(marker);
     if (!existsSync(marker)) return 0;
     const decision = decide(command, input.cwd ?? process.cwd());
-    if (!decision) return 0;
-    const [permissionDecision, permissionDecisionReason] = decision;
-    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision, permissionDecisionReason } }));
+    const additionalContext = handoffContext(command, input);
+    if (!decision && !additionalContext) return 0;
+    const [permissionDecision, permissionDecisionReason] = decision ?? [];
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision, permissionDecisionReason, additionalContext: additionalContext ?? undefined } }));
   } catch (error) {
     process.stderr.write(`gsd guard: let the command through after an error: ${error.message}\n`);
   }
@@ -739,7 +794,7 @@ function readFeatures(root, mapDir) {
     .sort()
     .map((name) => {
       const text = readFileSync(join(root, mapDir, name), 'utf8');
-      return { file: `${mapDir}/${name}`, paths: listLine(text, 'Paths'), specs: listLine(text, 'Specs') };
+      return { file: `${mapDir}/${name}`, paths: listLine(text, 'Paths'), routes: listLine(text, 'Routes'), specs: listLine(text, 'Specs') };
     });
 }
 
@@ -757,12 +812,21 @@ function features(args) {
   const isTest = testFileMatcher(settings);
   const touched = map.filter((feature) => changed.some((path) => matchesAny(path, [...feature.paths, ...feature.specs])));
   const unmapped = changed.filter((path) => SOURCE_FILE.test(path) && !isTest(path) && !map.some((feature) => matchesAny(path, feature.paths)));
-  const lines = [...touched.flatMap((feature) => [`feature ${feature.file}`, ...feature.specs.map((spec) => `  spec ${spec}`)]), ...unmapped.map((path) => `unmapped ${path}`)];
+  const lines = [...touched.flatMap((feature) => [`feature ${feature.file}`, ...feature.routes.map((route) => `  route ${route}`), ...feature.specs.map((spec) => `  spec ${spec}`)]), ...unmapped.map((path) => `unmapped ${path}`)];
   process.stdout.write([...lines, `features: ${touched.length} touched, ${unmapped.length} unmapped`].join('\n') + '\n');
 }
 
 const counted = (count, noun) => `${count} ${noun}${count === 1 ? '' : 's'}`;
 const lastByKey = (entries, key) => [...new Map(entries.map((entry) => [key(entry), entry])).values()];
+
+function handoffResult(entries) {
+  const high = ofPhase(entries, 'context');
+  if (high.length === 0) return 'none needed';
+  const missed = ofPhase(entries.slice(entries.findLastIndex((entry) => entry.phase === 'handoff') + 1), 'context');
+  if (missed.length === 0) return 'handed off at each checkpoint above the threshold';
+  const largest = Math.max(...missed.map((entry) => Number(entry.given.tokens)));
+  return `${counted(missed.length, 'checkpoint')} above ${thousands(HANDOFF_TOKENS)} tokens without a hand-off (largest ${thousands(largest)})`;
+}
 
 function summary([slug]) {
   const entries = slug ? runEntries(runDir(slug)) : [];
@@ -784,6 +848,7 @@ function summary([slug]) {
     `| Diff-check | ${shown(ship, (entry) => entry.given['diff-check'])}; ${counted(kept.length, 'review finding')} kept, ${counted(accepted.length, 'blocking finding')} accepted by the user |`,
     `| Cold review | ${shown(last('review'), (entry) => entry.result)} |`,
     `| Gate first pass | ${shown(ship, (entry) => entry.given['gate-first-pass'])} |`,
+    `| Hand-off | ${handoffResult(entries)} |`,
   ];
   if (criteria.length > 0) {
     lines.push('', '| Criterion | Test | Proven by breaking the code |', '|---|---|---|');

@@ -14,9 +14,10 @@ Never drive an instance this run did not start. Report a path you could not reac
 
 ## Feature file shape
 
-Each file starts with the feature name, one paragraph on what the user can do, then two lines the tooling reads:
+Each file starts with the feature name, one paragraph on what the user can do, then the lines the tooling reads:
 
 - `Paths:` globs for the code that implements the feature.
+- `Routes:` (optional, for a feature with screens) the app paths that show it, which `gsd features` prints for `gsd explore --start`.
 - `Specs:` the specs that prove it.
 
 Then four sections, in this order: `Sub-features` (short ids, one line each), `How to reach it` (every entry point a user has), `Driving it` (each user action with its exact command and the result to observe), `Gotchas` (traps that waste or invalidate a run).

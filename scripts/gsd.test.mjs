@@ -1,7 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, utimesSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -536,6 +536,14 @@ test('features lists a feature when only its spec changes', () => {
   assert.match(result.stdout, /^feature docs\/feature-map\/search\.md$/m);
 });
 
+test('features prints routes of a touched feature', () => {
+  const result = mappedBranchWith((cwd) => {
+    write(cwd, 'docs/feature-map/search.md', SEARCH_FEATURE.replace('Specs:', 'Routes: `/search`, `/search?q=a`\nSpecs:'));
+    write(cwd, 'src/search/index.js', 'export const s = 3;\n');
+  });
+  assert.deepEqual(result.stdout.trim().split('\n'), ['feature docs/feature-map/search.md', '  route /search', '  route /search?q=a', '  spec e2e/search.spec.js', 'features: 1 touched, 0 unmapped']);
+});
+
 test('features warns about a feature file without a Paths line', () => {
   const result = mappedBranchWith((cwd) => {
     write(cwd, 'docs/feature-map/export.md', '# Export\n\n**Paths:** src/export\n');
@@ -574,7 +582,7 @@ test('the shipped example feature works as a feature map entry', () => {
   git(cwd, 'add', '-A');
   git(cwd, 'commit', '-q', '-m', 'work');
   const result = gsd(['features', '--base', 'main'], { cwd });
-  assert.match(result.stdout, /^feature docs\/feature-map\/search\.md\n  spec e2e\/search\.spec\.ts$/m);
+  assert.match(result.stdout, /^feature docs\/feature-map\/search\.md\n  route \/search\n  spec e2e\/search\.spec\.ts$/m);
 });
 
 test('features without a map exits 1 naming setup', () => {
@@ -649,9 +657,15 @@ writeFileSync(
   ].join('\n'),
 );
 
-function shipRun(changes = {}, { lane = 'Direct', lines = [], gh = () => ({}), files = {}, guide } = {}) {
+function shipRun(changes = {}, { lane = 'Direct', lines = [], gh = () => ({}), files = {}, guide, then } = {}) {
   const cwd = branch(changes, { guide });
   const home = freshDir('home');
+  const first = git(cwd, 'rev-parse', 'HEAD');
+  if (then) {
+    for (const [path, content] of Object.entries(then)) write(cwd, path, content);
+    git(cwd, 'add', '-A');
+    git(cwd, 'commit', '-q', '-m', 'then');
+  }
   const head = git(cwd, 'rev-parse', 'HEAD');
   const runDir = join(home, 'proj', 's');
   for (const [name, content] of Object.entries(files)) write(runDir, name, content);
@@ -660,7 +674,7 @@ function shipRun(changes = {}, { lane = 'Direct', lines = [], gh = () => ({}), f
   writeFileSync(answers, JSON.stringify({ 'pr view': { state: 'OPEN', headRefOid: head, headRefName: 'work' }, 'run list': [], ...gh(head) }));
   const env = { GSD_GH: FAKE_GH, FAKE_GH_ANSWERS: answers };
   const ship = ({ gate = 'pass', diff = 'pass' } = {}) => gsd(['log', 's', 'ship', 'done', 'pr=5', `gate-first-pass=${gate}`, `diff-check=${diff}`], { cwd, home, env });
-  return { cwd, home, head, env, ship, log: () => readFileSync(join(runDir, 'log.md'), 'utf8') };
+  return { cwd, home, first, head, env, ship, log:() => readFileSync(join(runDir, 'log.md'), 'utf8') };
 }
 
 const WHY_COMMENT = `${SLASHES} The vendor API returns seconds, not milliseconds.\nexport const a = 1;\n`;
@@ -803,6 +817,44 @@ test('ship refuses a survived mutant when the guide has mutate, until it is kept
   assert.doesNotMatch(run.ship().stderr, /at=src\/a\.js:2 /);
 });
 
+const EXPLORE_GUIDE = '## Get Ship Done\n\n- explore: `http://localhost:5173`\n';
+const UI_CHANGE = { 'src/page.html': '<p>Hello</p>\n' };
+const logExplore = (run, head, result = 'pass', findings = []) => {
+  appendFileSync(join(run.home, 'proj', 's', 'log.md'), `2026-11-01 explore ${result} steps=9 violations=${findings.length} seed=1 head=${head}\n`);
+  writeFileSync(join(run.home, 'proj', 's', 'explore.json'), JSON.stringify(findings));
+};
+
+test('ship refuses a UI change without an explore line', () => {
+  const run = shipRun(UI_CHANGE, { guide: EXPLORE_GUIDE });
+  assertRefused(run, run.ship(), /UI files changed but no explore line\. Fix: .*gsd explore --slug s/);
+  assert.equal(shipRun(UI_CHANGE).ship().status, 0, 'a project without explore in its guide ships a UI change');
+});
+
+test('ship takes an explore line on HEAD, or on a commit with no UI change since', () => {
+  const onHead = shipRun(UI_CHANGE, { guide: EXPLORE_GUIDE });
+  logExplore(onHead, onHead.head);
+  const shipped = onHead.ship();
+  assert.equal(shipped.status, 0, shipped.stderr);
+  const later = shipRun(UI_CHANGE, { guide: EXPLORE_GUIDE, then: { 'src/a.js': 'export const a = 3;\n' } });
+  logExplore(later, later.first);
+  const result = later.ship();
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('ship refuses an explore line older than the last UI change', () => {
+  const run = shipRun(UI_CHANGE, { guide: EXPLORE_GUIDE });
+  logExplore(run, git(run.cwd, 'rev-parse', 'main'));
+  assertRefused(run, run.ship(), /explore ran on [0-9a-f]{7}, and UI files changed since\. Fix: .*gsd explore --slug s/);
+});
+
+test('ship refuses an explore violation until it is fixed or kept', () => {
+  const run = shipRun(UI_CHANGE, { guide: EXPLORE_GUIDE });
+  logExplore(run, run.head, 'fail', [{ where: '/page.html', rule: 'console-error', text: 'boom' }]);
+  assertRefused(run, run.ship(), /^review \/page\.html console-error: boom[\s\S]*keep ok at=\/page\.html rule=console-error/m);
+  appendFileSync(join(run.home, 'proj', 's', 'log.md'), '2026-11-01 keep ok at=/page.html rule=console-error why=third-party-widget\n');
+  assert.equal(run.ship().status, 0);
+});
+
 const CLEAN_CHANGE = { 'src/a.js': 'export const a = 2;\n' };
 const ciRun = (headSha, conclusion, createdAt, status = 'completed') => ({ name: 'gate', headSha, status, conclusion, createdAt });
 
@@ -911,6 +963,7 @@ test('summary lists the trust record with criteria, tests and proof', () => {
     '| Diff-check | accepted; 1 review finding kept, 1 blocking finding accepted by the user |',
     '| Cold review | changes |',
     '| Gate first pass | fail |',
+    '| Hand-off | none needed |',
     '',
     '| Criterion | Test | Proven by breaking the code |',
     '|---|---|---|',
@@ -1005,6 +1058,56 @@ for (const command of ASK_COMMANDS) {
   });
 }
 
+const usageLine = (tokens, extra = {}) => JSON.stringify({ type: 'assistant', isSidechain: false, message: { role: 'assistant', usage: { input_tokens: 10, cache_creation_input_tokens: 990, cache_read_input_tokens: tokens - 1000, output_tokens: 300 } }, ...extra });
+
+function checkpoint(command, tokens, { transcriptPath } = {}) {
+  const home = freshDir('home');
+  const cwd = project();
+  const transcript = transcriptPath ?? join(freshDir('transcript'), 'session.jsonl');
+  if (!transcriptPath) writeFileSync(transcript, [JSON.stringify({ type: 'user', message: { role: 'user', content: 'go' } }), usageLine(tokens), usageLine(5000, { isSidechain: true }), JSON.stringify({ type: 'user', message: { role: 'user', content: 'result' } }), ''].join('\n'));
+  const input = JSON.stringify({ session_id: 'session-1', transcript_path: transcript, cwd, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } });
+  const result = gsd(['guard'], { home, cwd, input });
+  return { ...result, output: result.stdout ? JSON.parse(result.stdout).hookSpecificOutput : null, home, cwd };
+}
+
+const GSD_LOG = 'node "/plugins/get-ship-done/scripts/gsd.mjs" log s';
+
+test('guard tells the orchestrator to hand off at a checkpoint above the threshold', () => {
+  for (const call of ['next "build PR3"', 'ship done pr=5 gate-first-pass=pass diff-check=pass', 'design done', 'clarify done']) {
+    const result = checkpoint(`${GSD_LOG} ${call}`, 250000);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.output?.permissionDecision, undefined, 'the hand-off never blocks the command');
+    assert.match(result.output?.additionalContext ?? '', /250k tokens, above the 200k hand-off threshold[\s\S]*start_session[\s\S]*"\/get-ship-done:ship resume s"/, `no hand-off for ${call}`);
+    assert.match(readFileSync(join(result.home, 'proj', 's', 'log.md'), 'utf8'), /^\d{4}-\d{2}-\d{2} context high tokens=250000$/m);
+  }
+});
+
+test('guard stays silent below the threshold, off a checkpoint, and without a transcript', () => {
+  assert.equal(checkpoint(`${GSD_LOG} next "x"`, 150000).stdout, '');
+  assert.equal(checkpoint(`${GSD_LOG} note "x"`, 250000).stdout, '');
+  assert.equal(checkpoint(`${GSD_LOG} build done`, 250000).stdout, '');
+  const missing = checkpoint(`${GSD_LOG} next "x"`, 0, { transcriptPath: join(freshDir('none'), 'missing.jsonl') });
+  assert.equal(missing.status, 0);
+  assert.equal(missing.stdout, '');
+});
+
+test('guard keeps its decision when a checkpoint command also merges', () => {
+  const result = checkpoint(`${GSD_LOG} next "x" && gh pr merge 5`, 250000);
+  assert.equal(result.output.permissionDecision, 'ask');
+  assert.match(result.output.additionalContext, /hand-off threshold/);
+});
+
+test('summary shows checkpoints passed above the threshold without a hand-off', () => {
+  const home = freshDir('home');
+  const cwd = project();
+  write(join(home, 'proj', 's'), 'log.md', ['2026-11-01 intake ok lane=Risky base=main@abc', '2026-11-01 context high tokens=210000', '2026-11-01 handoff started session=a', '2026-11-02 context high tokens=260000', '2026-11-02 context high tokens=300000', ''].join('\n'));
+  const result = gsd(['summary', 's'], { cwd, home });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^\| Hand-off \| 2 checkpoints above 200k tokens without a hand-off \(largest 300k\) \|$/m);
+  write(join(home, 'proj', 's'), 'log.md', '2026-11-01 intake ok lane=Risky base=main@abc\n');
+  assert.match(gsd(['summary', 's'], { cwd, home }).stdout, /^\| Hand-off \| none needed \|$/m);
+});
+
 test('guard asks on the PowerShell tool as well', () => {
   assert.equal(guard('gh pr merge 5', { ...runSession(), tool: 'PowerShell' }).decision.permissionDecision, 'ask');
 });
@@ -1051,7 +1154,7 @@ test('every gsd log call in the ship skill uses a known phase', () => {
 
 test('every gsd command the ship skill names exists in the script', () => {
   const named = [...SHIP_SKILL.matchAll(/`gsd ([a-z-]+)/g)].map((call) => call[1]);
-  for (const expected of ['lint', 'diff-check', 'config', 'features', 'ui-audit', 'summary', 'deprecated', 'coverage', 'changed', 'mutation']) assert.ok(named.includes(expected), `the ship skill never names gsd ${expected}`);
+  for (const expected of ['lint', 'diff-check', 'config', 'features', 'ui-audit', 'summary', 'deprecated', 'coverage', 'changed', 'mutation', 'explore']) assert.ok(named.includes(expected), `the ship skill never names gsd ${expected}`);
   for (const name of named) assert.ok(COMMAND_NAMES.includes(name), `the ship skill names unknown command "gsd ${name}"`);
 });
 

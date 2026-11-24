@@ -3,6 +3,7 @@
 A user finds a note by words in its title or body, opens it from the results, and can tell "no matches" apart from "search is unavailable".
 
 Paths: `src/search/**`, `server/routes/search.ts`
+Routes: `/search`
 Specs: `e2e/search.spec.ts`
 
 ## Sub-features
