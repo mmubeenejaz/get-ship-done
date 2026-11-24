@@ -21,6 +21,7 @@ Requirement: $ARGUMENTS
 | `gsd log <slug> <phase> <result> [key=value ...]` | the only way a line enters `log.md`; `note` and `next` take free text |
 | `gsd lint <brief.md or plan.md>` | the card check, before an approval gate |
 | `gsd diff-check --base <ref>` | test integrity, escape hatches and doc clutter on the branch diff |
+| `gsd features --base <ref>` | the features the branch touches, with their specs, from the project's feature map |
 | `gsd stats` | first-pass, gate and outcome rates for this repo |
 
 The plugin's hook treats a session as a run from its first `gsd` command. From then on a merge, a ready mark or a push to the base branch prompts the user, and `--no-verify` is denied.
@@ -49,7 +50,7 @@ Ask the user every decision and every approval gate with AskUserQuestion, recomm
 
 ## Check routing (pick checks from the change, not from habit)
 
-1. Where the project has a test selector, use it on the branch's changed files and run only what it prints (named in the project guide's Get Ship Done section).
+1. Where the project has a test selector, use it on the branch's changed files and run only what it prints (named in the project guide's Get Ship Done section). Where it has a feature map, run `gsd features --base origin/<base>` as well: run the specs it prints for each touched feature, and settle in the brief which feature owns any file it prints as `unmapped`.
 2. By nature of the change:
    - UI only: the area's e2e specs plus one screenshot through the `run` skill; no server suite.
    - Server logic or API: the touched modules' tests; e2e only for a changed user flow.
@@ -102,7 +103,7 @@ A project names its living docs with the `docs` key of its Get Ship Done section
 ## 0. Intake
 
 1. Confirm a git repo with a clean state you understand. Find the base branch (`git symbolic-ref refs/remotes/origin/HEAD`); ask if unclear. Read the repo's AGENTS.md or CLAUDE.md: a stricter project rule (required checks, review rules, PR rules, a deploy skill) wins.
-2. Find the project's gate: the CI the project guide names as its gate (and its backup, if any), or the documented local gate command where none runs. Run `gsd config` for the guide's `## Get Ship Done` section (gate, test selector, checks, PR facts, housekeeping, deprecated patterns, living docs); if it reports none, find the gate in the CI config and offer to add the section.
+2. Find the project's gate: the CI the project guide names as its gate (and its backup, if any), or the documented local gate command where none runs. Run `gsd config` for the guide's `## Get Ship Done` section (gate, test selector, checks, PR facts, housekeeping, deprecated patterns, living docs); if it reports none, find the gate in the CI config and offer `/get-ship-done:setup`, which writes the section and seeds a feature map.
 3. Pick the lane from the table and tell the user in one line, with the trigger. Choose the model by lane, not by phase: Risky work is best done in an Opus session; Standard and Direct work suit a Sonnet session. If the session's model does not fit the lane, say so in the same line and recommend switching before Clarify; never dispatch a subagent on another model to make up for it. Direct: log intake (step 6) so the hook covers the session, then skip to Build; no run folder documents.
 4. Pick a short kebab-case slug. The run folder is `~/.get-ship-done/<repo-name>/<slug>/` (outside the repo) and holds `brief.md` (Standard) or `spec.md` and `plan.md` (Risky), plus `log.md`.
 5. If the run folder exists (or the argument is `resume <slug>`), this is a resume: read `log.md` and the brief or plan, check git for the branch, commits and PR, and continue at its last `next` line or the first phase without a done line. With `build <slug> T<a>-T<b>` you are a build session: read the brief or plan, build only those cards (phase 3), log each, push, and stop.
@@ -147,7 +148,7 @@ When the work splits into several PRs, run phases 3 to 5 once per PR, each branc
 1. Branch from the latest base (`git fetch`, branch from `origin/<base>` or the previous PR's head). If another session or someone else's uncommitted work is in the checkout, use a git worktree.
 2. Load `mattpocock-skills:tdd` for behavior changes. The approved cards are not asked again. Direct lane: a test only where behavior changes.
 3. Per card, in order: red (the card's test, failing for the right reason), green (the smallest code that passes), refactor while green. Run its `Done when` command and the routed checks. Format with the project's formatter. Commit each card with what and why, and log its line. A card's `Stop if` met, or a card that cannot be done as written, stops the build: report it; the orchestrator fixes the card, never the builder.
-4. Apply the Docs items in the same change, as section edits. Run the manual checks (load `run` to launch the app) and record each result with `gsd log <slug> note`. A UI change ends with a screenshot of each changed screen, compared against the brief's Screens section.
+4. Apply the Docs items in the same change, as section edits. Where the project has a feature map, prove the change in the running app: for each feature `gsd features` lists, follow its "Driving it" steps with the map's recipe (server and API changes included, not only UI), log where the evidence is with `gsd log <slug> note`, and fix any map entry this change makes untrue. Run the manual checks (load `run` to launch the app) and record each result with `gsd log <slug> note`. A UI change ends with a screenshot of each changed screen, compared against the brief's Screens section.
 5. Stop and ask when the brief or plan proves wrong, the work needs something not approved, or a failure resists two attempts. Do not improvise architecture.
 
 Build rules: fix root causes; never hide or swallow errors, leave stubs or placeholders, or skip, weaken or delete a valid test; keep server-side authorization, tenant isolation and data boundaries; validate external input at boundaries without excess defense; names follow the domain; no new comments (see Comments); never edit an applied migration; no secrets or real personal data in code, logs or fixtures; no AI attribution; no em dashes in written text; stop every server or watcher you start.

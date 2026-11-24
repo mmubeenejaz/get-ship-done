@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { CARD_FIELDS, COMMAND_NAMES, PHASES } from './gsd.mjs';
+import { CARD_FIELDS, COMMAND_NAMES, CONFIG_KEYS, PHASES } from './gsd.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const GSD = join(HERE, 'gsd.mjs');
@@ -370,6 +370,33 @@ test('features reads the map folder named by the guide', () => {
   assert.match(gsd(['features', '--base', 'main'], { cwd }).stdout, /^feature docs\/map\/search\.md$/m);
 });
 
+const SETUP_DIR = join(HERE, '..', 'skills', 'setup');
+const readSetup = (...path) => readFileSync(join(SETUP_DIR, ...path), 'utf8');
+
+test('the setup skill is user-invoked and writes only section keys gsd config knows', () => {
+  const skill = readSetup('SKILL.md');
+  assert.match(skill, /^disable-model-invocation: true$/m);
+  const keys = [...skill.matchAll(/^- ([a-z][a-z-]*): /gm)].map((line) => line[1]);
+  assert.ok(keys.includes('gate') && keys.includes('docs') && keys.includes('feature-map'), `found keys: ${keys}`);
+  for (const key of keys) assert.ok(CONFIG_KEYS.includes(key), `the setup skill writes unknown key "${key}"`);
+});
+
+test('the shipped example feature works as a feature map entry', () => {
+  const example = readSetup('references', 'feature-map', 'example-feature.md');
+  for (const heading of ['## Sub-features', '## How to reach it', '## Driving it', '## Gotchas']) assert.ok(example.includes(heading), `missing ${heading}`);
+  const cwd = project({
+    'src/search/index.js': 'export const s = 1;\n',
+    'docs/feature-map/README.md': readSetup('references', 'feature-map', 'README.md'),
+    'docs/feature-map/search.md': example,
+  });
+  git(cwd, 'switch', '-q', '-c', 'work');
+  write(cwd, 'src/search/index.js', 'export const s = 2;\n');
+  git(cwd, 'add', '-A');
+  git(cwd, 'commit', '-q', '-m', 'work');
+  const result = gsd(['features', '--base', 'main'], { cwd });
+  assert.match(result.stdout, /^feature docs\/feature-map\/search\.md\n  spec e2e\/search\.spec\.ts$/m);
+});
+
 test('features without a map exits 1 naming setup', () => {
   const result = gsd(['features', '--base', 'main'], { cwd: branch({}) });
   assert.equal(result.status, 1);
@@ -519,7 +546,7 @@ test('every gsd log call in the ship skill uses a known phase', () => {
 
 test('every gsd command the ship skill names exists in the script', () => {
   const named = [...SHIP_SKILL.matchAll(/`gsd ([a-z-]+)/g)].map((call) => call[1]);
-  assert.ok(named.includes('lint') && named.includes('diff-check') && named.includes('config'));
+  for (const expected of ['lint', 'diff-check', 'config', 'features']) assert.ok(named.includes(expected), `the ship skill never names gsd ${expected}`);
   for (const name of named) assert.ok(COMMAND_NAMES.includes(name), `the ship skill names unknown command "gsd ${name}"`);
 });
 
