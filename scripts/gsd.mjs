@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -56,8 +56,10 @@ export const PHASES = {
   accept: { result: oneOf(['ok']), keys: { at: ANY, rule: KEBAB, by: oneOf(['user']) } },
   ship: { keys: { pr: DIGITS, 'gate-first-pass': oneOf(PASS_FAIL), 'diff-check': oneOf(['pass', 'accepted']) } },
   handoff: {},
+  context: { result: oneOf(['high']), keys: { tokens: DIGITS } },
   outcome: { result: oneOf(['merged', 'closed', 'reverted']), keys: { pr: DIGITS } },
   escape: { result: oneOf(ESCAPE_LAYERS), keys: { pr: DIGITS, check: KEBAB } },
+  explore: { result: oneOf(PASS_FAIL), keys: { steps: DIGITS, violations: DIGITS, seed: DIGITS, head: ANY } },
   note: { freeText: true },
   next: { freeText: true },
 };
@@ -96,7 +98,7 @@ function parseLine([date, phase, ...rest]) {
   }
 }
 
-const runDir = (slug) => join(home(), repoName(), slug);
+const runDir = (slug, cwd) => join(home(), repoName(cwd), slug);
 
 const ofPhase = (entries, phase) => entries.filter((entry) => entry.phase === phase);
 
@@ -106,8 +108,11 @@ function runEntries(dir) {
   return readFileSync(file, 'utf8').split(/\r?\n/).map((line) => parseLine(line.split(' '))).filter(Boolean);
 }
 
+const SLUG = /^[a-z0-9][a-z0-9-]*$/;
+const EXPLORE_FINDINGS = 'explore.json';
+
 function log([slug, phase, ...rest]) {
-  if (!slug || !/^[a-z0-9][a-z0-9-]*$/.test(slug)) fail('gsd log: the first argument is the run slug in kebab-case. Fix: gsd log <slug> <phase> <result> [key=value ...].');
+  if (!slug || !SLUG.test(slug)) fail('gsd log: the first argument is the run slug in kebab-case. Fix: gsd log <slug> <phase> <result> [key=value ...].');
   const { given } = readEntry(phase, rest);
   const dir = runDir(slug);
   if (phase === 'ship') verifyShip(slug, dir, given);
@@ -129,8 +134,9 @@ function verifyShip(slug, dir, given) {
   const base = [`origin/${ref}`, ref, sha].find((candidate) => candidate && isCommit(candidate));
   if (!base) fail(`gsd log: ship refused, the intake base "${intake.given.base}" is not a commit git knows. Fix: git fetch, or log a new intake line whose base=<branch>@<sha> resolves.`);
   const settings = readConfig(repoRoot())?.values ?? {};
-  const measured = [...(settings.coverage ? coverageFindings(base, settings) : []), ...(settings.mutate ? mutationFindings(base, settings) : [])];
-  const problems = [...diffProblems(slug, base, given, entries, measured), ...criteriaProblems(slug, dir, intake.given.lane, entries), ...githubProblems(given)];
+  const explored = settings.explore ? exploreEvidence(slug, dir, base, settings, entries) : { problems: [], findings: [] };
+  const measured = [...(settings.coverage ? coverageFindings(base, settings) : []), ...(settings.mutate ? mutationFindings(base, settings) : []), ...explored.findings];
+  const problems = [...explored.problems, ...diffProblems(slug, base, given, entries, measured), ...criteriaProblems(slug, dir, intake.given.lane, entries), ...githubProblems(given)];
   if (problems.length > 0) fail(['gsd log: ship refused, nothing was written. Fix each problem, then log ship again:', ...capped(problems, REVIEW_LIMIT)].join('\n'));
 }
 
@@ -150,6 +156,21 @@ function diffProblems(slug, base, given, entries, measured) {
     problems.push(`${findingLine('review', finding)}\n  Or keep it: gsd log ${slug} keep ok at=${atOf(finding.where)} rule=${finding.rule} why=<kebab-case-reason>.`);
   }
   return problems;
+}
+
+function exploreEvidence(slug, dir, base, settings, entries) {
+  const isTest = testFileMatcher(settings);
+  const changesUi = (range) => readDiff(['--name-only', '--no-renames', range]).split('\n').some((path) => UI_FILE.test(path) && !isTest(path));
+  if (!changesUi(`${base}...HEAD`)) return { problems: [], findings: [] };
+  const rerun = `run the app locally, then gsd explore --slug ${slug} (--start with the routes gsd features prints), and log ship again`;
+  const explore = entries.findLast((entry) => entry.phase === 'explore');
+  if (!explore) return { problems: [`UI files changed but no explore line. Fix: ${rerun}.`], findings: [] };
+  const { head } = explore.given;
+  if (!isCommit(head) || changesUi(`${head}..HEAD`)) return { problems: [`explore ran on ${short(head)}, and UI files changed since. Fix: ${rerun}.`], findings: [] };
+  if (explore.result === 'pass') return { problems: [], findings: [] };
+  const file = join(dir, EXPLORE_FINDINGS);
+  if (!existsSync(file)) return { problems: [`the explore line failed but ${file} is missing, so its violations are unknown. Fix: ${rerun}.`], findings: [] };
+  return { problems: [], findings: JSON.parse(readFileSync(file, 'utf8')) };
 }
 
 const coveredNumbers = (card) => card.fields.Covers?.value.match(/\d+/g)?.map(Number) ?? [];
@@ -232,8 +253,8 @@ function parseFlags(args, names) {
 
 const repoRoot = (cwd = process.cwd()) => git(['rev-parse', '--show-toplevel'], cwd)?.trim() ?? cwd;
 
-export const CONFIG_KEYS = ['gate', 'gate-backup', 'preflight', 'precheck', 'selector', 'migration', 'pr-facts', 'tidy', 'subagent-text', 'tests', 'deprecated', 'docs', 'feature-map', 'verify', 'design', 'coverage', 'lcov', 'mutate', 'mutation-report', 'smoke', 'health'];
-const LIST_KEYS = ['tests', 'deprecated', 'docs'];
+export const CONFIG_KEYS = ['gate', 'gate-backup', 'preflight', 'precheck', 'selector', 'migration', 'pr-facts', 'tidy', 'subagent-text', 'tests', 'deprecated', 'docs', 'feature-map', 'verify', 'design', 'coverage', 'lcov', 'mutate', 'mutation-report', 'smoke', 'health', 'explore', 'explore-hosts', 'explore-skip', 'explore-properties', 'explore-state', 'explore-browser'];
+const LIST_KEYS = ['tests', 'deprecated', 'docs', 'explore-hosts', 'explore-skip'];
 const GUIDES = ['AGENTS.md', 'CLAUDE.md'];
 const SECTION = /^##\s+Get Ship Done\s*$/i;
 
@@ -668,6 +689,9 @@ const PUSH = /\bgit(?:\.exe)?(?:\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)|--?[\w-]+(
 const PUSHES_EVERY_BRANCH = /\s--(?:all|mirror)\b/;
 const LINE_CONTINUATION = /[\\`]\r?\n/g;
 const MARKER_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const HANDOFF_TOKENS = 200000;
+const TRANSCRIPT_TAIL_BYTES = 4 * 1024 * 1024;
+const CHECKPOINT = /gsd\.mjs["']?\s+log\s+([a-z0-9][a-z0-9-]*)\s+(?:ship|next|(?:design|clarify)\s+done)\b/;
 
 function pushesToBase(command, cwd) {
   const pushes = [...command.matchAll(PUSH)];
@@ -707,6 +731,40 @@ function markSession(marker) {
   writeFileSync(marker, '');
 }
 
+function contextTokens(transcript) {
+  const size = statSync(transcript).size;
+  const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
+  const buffer = Buffer.alloc(length);
+  const file = openSync(transcript, 'r');
+  try {
+    readSync(file, buffer, 0, length, size - length);
+  } finally {
+    closeSync(file);
+  }
+  for (const line of buffer.toString('utf8').split('\n').reverse()) {
+    try {
+      const entry = JSON.parse(line);
+      const usage = entry.message?.usage;
+      if (entry.type === 'assistant' && !entry.isSidechain && usage) return (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+    } catch {}
+  }
+  return 0;
+}
+
+const thousands = (tokens) => `${Math.round(tokens / 1000)}k`;
+
+function handoffContext(command, input) {
+  const slug = command.match(CHECKPOINT)?.[1];
+  if (!slug || typeof input.transcript_path !== 'string' || !existsSync(input.transcript_path)) return null;
+  const tokens = contextTokens(input.transcript_path);
+  if (tokens <= HANDOFF_TOKENS) return null;
+  const cwd = input.cwd ?? process.cwd();
+  const dir = runDir(slug, cwd);
+  mkdirSync(dir, { recursive: true });
+  appendFileSync(join(dir, 'log.md'), `${today()} context high tokens=${tokens}\n`);
+  return `Get Ship Done hand-off: this session's context is about ${thousands(tokens)} tokens, above the ${thousands(HANDOFF_TOKENS)} hand-off threshold, at a checkpoint of run ${slug}. After this command, commit and push, make sure the log ends with a next line, then start a fresh session (start_session, context "fresh", its own worktree on the branch) whose brief is "/get-ship-done:ship resume ${slug}" plus the run folder ${dir}, log it with gsd log ${slug} handoff started session=<name>, tell the user in one line, and stop working here.`;
+}
+
 function guard() {
   try {
     const input = JSON.parse(readFileSync(0, 'utf8'));
@@ -716,9 +774,15 @@ function guard() {
     if (RUN_COMMAND.test(command)) markSession(marker);
     if (!existsSync(marker)) return 0;
     const decision = decide(command, input.cwd ?? process.cwd());
-    if (!decision) return 0;
-    const [permissionDecision, permissionDecisionReason] = decision;
-    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision, permissionDecisionReason } }));
+    let additionalContext = null;
+    try {
+      additionalContext = handoffContext(command, input);
+    } catch (error) {
+      process.stderr.write(`gsd guard: skipped the hand-off check after an error: ${error.message}\n`);
+    }
+    if (!decision && !additionalContext) return 0;
+    const [permissionDecision, permissionDecisionReason] = decision ?? [];
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision, permissionDecisionReason, additionalContext: additionalContext ?? undefined } }));
   } catch (error) {
     process.stderr.write(`gsd guard: let the command through after an error: ${error.message}\n`);
   }
@@ -735,7 +799,7 @@ function readFeatures(root, mapDir) {
     .sort()
     .map((name) => {
       const text = readFileSync(join(root, mapDir, name), 'utf8');
-      return { file: `${mapDir}/${name}`, paths: listLine(text, 'Paths'), specs: listLine(text, 'Specs') };
+      return { file: `${mapDir}/${name}`, paths: listLine(text, 'Paths'), routes: listLine(text, 'Routes'), specs: listLine(text, 'Specs') };
     });
 }
 
@@ -753,12 +817,28 @@ function features(args) {
   const isTest = testFileMatcher(settings);
   const touched = map.filter((feature) => changed.some((path) => matchesAny(path, [...feature.paths, ...feature.specs])));
   const unmapped = changed.filter((path) => SOURCE_FILE.test(path) && !isTest(path) && !map.some((feature) => matchesAny(path, feature.paths)));
-  const lines = [...touched.flatMap((feature) => [`feature ${feature.file}`, ...feature.specs.map((spec) => `  spec ${spec}`)]), ...unmapped.map((path) => `unmapped ${path}`)];
+  const lines = [...touched.flatMap((feature) => [`feature ${feature.file}`, ...feature.routes.map((route) => `  route ${route}`), ...feature.specs.map((spec) => `  spec ${spec}`)]), ...unmapped.map((path) => `unmapped ${path}`)];
   process.stdout.write([...lines, `features: ${touched.length} touched, ${unmapped.length} unmapped`].join('\n') + '\n');
 }
 
 const counted = (count, noun) => `${count} ${noun}${count === 1 ? '' : 's'}`;
 const lastByKey = (entries, key) => [...new Map(entries.map((entry) => [key(entry), entry])).values()];
+
+function handoffResult(entries) {
+  if (!entries.some((entry) => entry.phase === 'context')) return 'none needed';
+  const missed = [];
+  let open = null;
+  for (const entry of entries) {
+    if (entry.phase === 'handoff') open = null;
+    if (entry.phase !== 'context') continue;
+    if (open) missed.push(open);
+    open = entry;
+  }
+  if (open) missed.push(open);
+  if (missed.length === 0) return 'handed off at each checkpoint above the threshold';
+  const largest = Math.max(...missed.map((entry) => Number(entry.given.tokens)));
+  return `${counted(missed.length, 'checkpoint')} above ${thousands(HANDOFF_TOKENS)} tokens without a hand-off (largest ${thousands(largest)})`;
+}
 
 function summary([slug]) {
   const entries = slug ? runEntries(runDir(slug)) : [];
@@ -780,6 +860,7 @@ function summary([slug]) {
     `| Diff-check | ${shown(ship, (entry) => entry.given['diff-check'])}; ${counted(kept.length, 'review finding')} kept, ${counted(accepted.length, 'blocking finding')} accepted by the user |`,
     `| Cold review | ${shown(last('review'), (entry) => entry.result)} |`,
     `| Gate first pass | ${shown(ship, (entry) => entry.given['gate-first-pass'])} |`,
+    `| Hand-off | ${handoffResult(entries)} |`,
   ];
   if (criteria.length > 0) {
     lines.push('', '| Criterion | Test | Proven by breaking the code |', '|---|---|---|');
@@ -947,7 +1028,66 @@ function deprecatedReport() {
   return 0;
 }
 
-const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard, features, 'ui-audit': uiAudit, summary, deprecated: deprecatedReport, coverage, changed, mutation };
+const EXPLORE_SECONDS = 120;
+const positiveNumber = (value, flag) => {
+  if (value === undefined) return undefined;
+  if (!/^\d+$/.test(value) || Number(value) === 0) fail(`gsd explore: --${flag} ${value} is not a positive whole number.`);
+  return Number(value);
+};
+
+const violationLine = ({ property, where, message, trace }) => `violation ${property} ${where}: ${message}${trace ? ` (trace ${trace})` : ''}`;
+
+async function exploreCommand(args) {
+  const shrink = args.includes('--shrink');
+  const { flags } = parseFlags(args.filter((arg) => arg !== '--shrink'), ['url', 'time', 'seed', 'start', 'browser', 'out', 'steps', 'replay', 'slug']);
+  if (flags.slug && !SLUG.test(flags.slug)) fail('gsd explore: --slug takes the run slug in kebab-case.');
+  if (shrink && !flags.replay) fail('gsd explore: --shrink works on a recorded trace. Fix: gsd explore --replay <trace.json> --shrink.');
+  const root = repoRoot();
+  const settings = readConfig(root)?.values ?? {};
+  const { checkHost, explore, readTrace, replay } = await import('./explore.mjs');
+  const shared = { browser: flags.browser ?? settings['explore-browser'], root, propertiesFile: settings['explore-properties'], state: settings['explore-state'], fail };
+  if (flags.replay) {
+    const trace = readTrace(resolve(flags.replay), fail);
+    checkHost(trace.url, settings['explore-hosts'] ?? [], fail);
+    const { reproduced, violations, shrunk } = await replay({ ...shared, file: resolve(flags.replay), trace, shrink });
+    const verdict = reproduced
+      ? `replay: reproduced ${trace.violation.property} from ${counted(trace.actions.length, 'action')}`
+      : `replay: did not reproduce ${trace.violation.property}; timing or data may differ from the recorded run, so explore again with seed ${trace.seed}`;
+    const shrinkLine = shrunk ? [`shrink: ${shrunk.from} to ${shrunk.to} actions, trace ${shrunk.file}`] : [];
+    process.stdout.write([...violations.map(violationLine), verdict, ...shrinkLine].join('\n') + '\n');
+    return violations.length > 0 ? 1 : 0;
+  }
+  const url = flags.url ?? settings.explore;
+  if (!url) fail('gsd explore: no URL to explore. Fix: pass --url <local app url>, or set "- explore: <url>" in the guide\'s Get Ship Done section.');
+  checkHost(url, settings['explore-hosts'] ?? [], fail);
+  const start = flags.start?.split(',').map((path) => path.trim()).filter(Boolean) ?? [];
+  const { origin } = new URL(url);
+  for (const route of start) {
+    if (new URL(route, url).origin !== origin) fail(`gsd explore: --start ${route} is not on ${origin}. Fix: pass paths on the explored app, such as /settings.`);
+  }
+  if (flags.seed !== undefined && !/^\d+$/.test(flags.seed)) fail(`gsd explore: --seed ${flags.seed} is not a whole number.`);
+  const seed = flags.seed === undefined ? Math.floor(Math.random() * 1e9) : Number(flags.seed);
+  const out = resolve(flags.out ?? (flags.slug ? join(runDir(flags.slug), 'explore') : join(tmpdir(), `gsd-explore-${seed}`)));
+  const { steps, violations } = await explore({
+    ...shared,
+    url,
+    seed,
+    seconds: positiveNumber(flags.time, 'time') ?? EXPLORE_SECONDS,
+    steps: positiveNumber(flags.steps, 'steps') ?? Infinity,
+    start,
+    skip: settings['explore-skip'] ?? [],
+    out,
+  });
+  process.stdout.write([...capped(violations.map(violationLine), REVIEW_LIMIT), `explore: ${counted(steps, 'step')}, ${counted(violations.length, 'violation')}, seed ${seed}, out ${out}`].join('\n') + '\n');
+  if (flags.slug) {
+    mkdirSync(runDir(flags.slug), { recursive: true });
+    writeFileSync(join(runDir(flags.slug), EXPLORE_FINDINGS), `${JSON.stringify(violations.map(({ where, property, message }) => ({ where, rule: property, text: message })), null, 2)}\n`);
+    log([flags.slug, 'explore', violations.length > 0 ? 'fail' : 'pass', `steps=${steps}`, `violations=${violations.length}`, `seed=${seed}`, `head=${git(['rev-parse', 'HEAD']).trim()}`]);
+  }
+  return violations.length > 0 ? 1 : 0;
+}
+
+const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard, features, 'ui-audit': uiAudit, summary, deprecated: deprecatedReport, coverage, changed, mutation, explore: exploreCommand };
 export const COMMAND_NAMES = Object.keys(COMMANDS);
 const RUN_COMMAND = new RegExp(`gsd\\.mjs["']?\\s+(?:${COMMAND_NAMES.filter((name) => name !== 'guard').join('|')})\\b`);
 
@@ -961,7 +1101,7 @@ function main(argv) {
 const invokedDirectly = process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
 if (invokedDirectly) {
   try {
-    process.exitCode = main(process.argv.slice(2)) ?? 0;
+    process.exitCode = (await main(process.argv.slice(2))) ?? 0;
   } catch (error) {
     if (!(error instanceof Fail)) throw error;
     process.stderr.write(`${error.message}\n`);

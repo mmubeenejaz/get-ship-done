@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Faults</title></head>
+<body>
+<main>
+  <h1>Faults</h1>
+  <button type="button"><svg width="10" height="10"></svg></button>
+  <div style="width: 600px">Wide</div>
+</main>
+<script>
+  console.error('planted console error');
+  fetch('/500');
+</script>
+</body>
+</html>

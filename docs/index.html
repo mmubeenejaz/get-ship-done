@@ -97,11 +97,12 @@ Stop if:    the test passes before the change</code></pre>
 <div class="card"><h3>Lessons</h3><p>A review finding a machine can detect becomes a check whose error names the fix. Only judgment calls stay as checklist lines.</p></div>
 <div class="card"><h3>UI with a direction</h3><p>A UI brief starts from five lines of product direction. Generic tokens are flagged on new lines, and <code>gsd ui-audit</code> triages existing screens before an unslop.</p></div>
 <div class="card"><h3>Old code shrinks</h3><p>New imports of deprecated code fail the diff check, and <code>gsd deprecated</code> lists each old area with its importers, so a change that supersedes it deletes it. Where a project has coverage or mutation testing, ship checks the changed lines against both reports.</p></div>
+<div class="card"><h3>UI explored, not eyeballed</h3><p><code>gsd explore</code> clicks through the local app with seeded random actions and reports page errors, failed requests, blank pages, unnamed controls and phone-width overflow, each with a trace it can replay and shrink. Where a project sets it up, a UI change cannot ship without an explore run on its last UI commit.</p></div>
 <div class="card"><h3>Check routing</h3><p>Tests are picked from the change through the project's selector, never the full suite until the gate.</p></div>
 </div>
 
 <h2>Session management</h2>
-<p>A new session or subagent costs roughly 65k tokens before it does any work, and long sessions get expensive to continue. So the orchestrator measures its context at each checkpoint (brief approved, PR shipped, gate started), hands off to a fresh session above about 200k tokens or after a compaction, and in Risky work gives each PR's cards to one build session on the cheapest model they allow. Subagents are used only for a read-heavy sweep, the cold review, or large independent work.</p>
+<p>A new session or subagent costs roughly 65k tokens before it does any work, and long sessions get expensive to continue. So at each checkpoint (brief approved, PR shipped, gate started) the plugin's hook reads the context size from the session transcript and tells the orchestrator to hand off to a fresh session above about 200k tokens or after a compaction, and in Risky work gives each PR's cards to one build session on the cheapest model they allow. Subagents are used only for a read-heavy sweep, the cold review, or large independent work.</p>
 
 <h2>Where instructions live</h2>
 <div class="fig">

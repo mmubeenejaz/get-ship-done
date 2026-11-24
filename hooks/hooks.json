@@ -1,5 +1,5 @@
 {
-  "description": "Get Ship Done hard limits: in a session that runs gsd, ask the user before a merge, a ready mark or a push to the base branch, and deny --no-verify.",
+  "description": "Get Ship Done hard limits: in a session that runs gsd, ask the user before a merge, a ready mark or a push to the base branch, deny --no-verify, and tell the orchestrator to hand off at a checkpoint above 200k tokens.",
   "hooks": {
     "PreToolUse": [
       {

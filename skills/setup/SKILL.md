@@ -37,6 +37,12 @@ Draft a `## Get Ship Done` section for the project guide (AGENTS.md, or CLAUDE.m
 - lcov: <path of that lcov report, default coverage/lcov.info>
 - mutate: <mutation-testing command, scoped with gsd changed; ship then requires changed lines' mutants killed or kept>
 - mutation-report: <path of its mutation-testing-elements JSON report, default reports/mutation/mutation.json>
+- explore: <URL of the locally running app; ship then requires a gsd explore line for a UI change>
+- explore-hosts: <non-local hosts gsd explore may drive, such as a staging host; never production>
+- explore-skip: <selectors explore must never touch, such as a delete or sign-out control>
+- explore-properties: <module whose default export maps property names to async (page) => message when violated>
+- explore-state: <Playwright storage state file for a signed-in test user>
+- explore-browser: <installed browser channel, msedge or chrome, when no Playwright browser is downloaded>
 - smoke: <command a deploy runs against the new release to prove its main flows>
 - health: <URL or command that says a deployed release is up>
 ```
@@ -59,6 +65,8 @@ Change nothing in this part. Report what you found and what is missing:
 | UI tokens | where color, spacing and type tokens and shared components live; the `gsd ui-audit` tally as the baseline; whether a lint rule rejects raw colors and one-off values |
 | Fitness checks | an authorization test that walks every entry point; tenant data reached through one typed path or row-level security; module boundaries enforced in lint; config validated at startup |
 | Coverage, mutation, property tests | an lcov-writing coverage command, a mutation tool with a JSON report, a property-test library; the `coverage`, `mutate` and their report keys once present |
+| UI exploration | Playwright (or `playwright-core` with an installed browser) in the project's dev dependencies, a local URL for `explore`, controls to put under `explore-skip`, `Routes:` lines in the feature map |
+| Deploy and release layers | a `health` check and a `smoke` command the project's deploy skill runs after each deploy, `gsd explore` against a staging host listed in `explore-hosts`, and an error watch after release; escapes found there are logged with `gsd log <slug> escape` |
 | Rules without an enforcer | lines in the guide that nothing checks |
 
 For each gap recommend the highest level that removes it: architecture that makes the mistake impossible, then a type, then a lint rule whose error names the fix, then a test, and a line in the guide only for a judgment call. Offer each as its own requirement for `/get-ship-done:ship`; do not fix them here.
