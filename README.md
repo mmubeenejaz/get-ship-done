@@ -61,6 +61,7 @@ Rules a machine can decide are checked by `scripts/gsd.mjs`, and every error nam
 | `gsd log` | a run log line has its phase's required keys; writes `log.md` and a per-repo `history.log` |
 | `gsd lint <brief or plan>` | cards are complete, paths and patterns exist, no pattern is deprecated, every acceptance criterion is covered, no question is open |
 | `gsd diff-check --base <ref>` | no skipped, focused or deleted test; no new suppression or workaround comment; no planning file, stray file or Markdown outside the living docs. Other new comments and docs are listed for review |
+| `gsd features --base <ref>` | prints the features a branch touches and their specs, from the project's feature map; lists source files no feature claims |
 | `gsd config` | prints the project section as JSON |
 | `gsd stats` | card first-pass rate by level and builder, gate first-pass rate, outcomes |
 
@@ -68,7 +69,9 @@ A PreToolUse hook (`hooks/hooks.json`) watches Bash and PowerShell commands. In 
 
 ## Set up a project
 
-Add a `## Get Ship Done` section to the project's `AGENTS.md` (or `CLAUDE.md`) as `- key: value` lines. The skill and the script read the same lines:
+Run `/get-ship-done:setup` in the project. It drafts the section below, reports what the project lacks for safe agent work (gate, strict types, lint boundaries, a suppression baseline, rules nothing enforces), and seeds a feature map: one file per user-facing feature with its code paths, its specs and how to drive it in the running app, plus one verification recipe. It asks before writing.
+
+Or write the `## Get Ship Done` section by hand in the project's `AGENTS.md` (or `CLAUDE.md`) as `- key: value` lines. The skill and the script read the same lines:
 
 ```markdown
 ## Get Ship Done
@@ -83,7 +86,7 @@ Add a `## Get Ship Done` section to the project's `AGENTS.md` (or `CLAUDE.md`) a
 
 Keys: `gate`, `gate-backup`, `preflight`, `precheck`, `selector`, `migration`, `pr-facts`, `tidy`, `subagent-text`, `tests`, `deprecated`, `docs`, `feature-map`, `verify`. `tests` adds to the built-in test file patterns. `deprecated` lists code no card may copy as its pattern. `docs` lists where a new Markdown file may be added; anywhere else it fails the diff check.
 
-Without the section the skill finds the gate in the CI config and offers to add it.
+Without the section the skill finds the gate in the CI config and offers the setup skill.
 
 ## Run state
 

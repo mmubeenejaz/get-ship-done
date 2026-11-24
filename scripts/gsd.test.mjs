@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { CARD_FIELDS, COMMAND_NAMES, PHASES } from './gsd.mjs';
+import { CARD_FIELDS, COMMAND_NAMES, CONFIG_KEYS, PHASES } from './gsd.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const GSD = join(HERE, 'gsd.mjs');
@@ -333,6 +333,117 @@ test('diff-check fails when git cannot produce the diff', () => {
   assert.match(result.stderr, /could not read the diff.* Fix: /);
 });
 
+const SEARCH_FEATURE = ['# Search', '', 'Find a note by title.', '', 'Paths: `src/search/**`, `server/search.js`', 'Specs: `e2e/search.spec.js`', '', '## Sub-features', ''].join('\n');
+
+function mappedBranch({ mapDir = 'docs/feature-map', guide } = {}) {
+  const cwd = project({
+    'src/search/index.js': 'export const s = 1;\n',
+    'src/other/x.js': 'export const x = 1;\n',
+    'src/other/x.test.js': 'test("x", () => {});\n',
+    [`${mapDir}/README.md`]: '# Map\n',
+    [`${mapDir}/search.md`]: SEARCH_FEATURE,
+    ...(guide ? { 'AGENTS.md': guide } : {}),
+  });
+  git(cwd, 'switch', '-q', '-c', 'work');
+  write(cwd, 'src/search/index.js', 'export const s = 2;\n');
+  write(cwd, 'src/other/x.js', 'export const x = 2;\n');
+  write(cwd, 'src/other/x.test.js', 'test("x2", () => {});\n');
+  write(cwd, 'README.md', 'changed\n');
+  git(cwd, 'add', '-A');
+  git(cwd, 'commit', '-q', '-m', 'work');
+  return cwd;
+}
+
+test('features lists each touched feature with its specs and the unmapped source files', () => {
+  const result = gsd(['features', '--base', 'main'], { cwd: mappedBranch() });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    'feature docs/feature-map/search.md',
+    '  spec e2e/search.spec.js',
+    'unmapped src/other/x.js',
+    'features: 1 touched, 1 unmapped',
+  ]);
+});
+
+test('features omits a feature whose paths the branch does not touch', () => {
+  const cwd = mappedBranch();
+  git(cwd, 'switch', '-q', '-c', 'elsewhere', 'main');
+  write(cwd, 'src/other/x.js', 'export const x = 3;\n');
+  git(cwd, 'add', '-A');
+  git(cwd, 'commit', '-q', '-m', 'elsewhere');
+  const result = gsd(['features', '--base', 'main'], { cwd });
+  assert.deepEqual(result.stdout.trim().split('\n'), ['unmapped src/other/x.js', 'features: 0 touched, 1 unmapped']);
+});
+
+function mappedBranchWith(change) {
+  const cwd = mappedBranch();
+  git(cwd, 'switch', '-q', '-c', 'other-work', 'main');
+  change(cwd);
+  git(cwd, 'add', '-A');
+  git(cwd, 'commit', '-q', '-m', 'other work');
+  return gsd(['features', '--base', 'main'], { cwd });
+}
+
+test('features lists the feature a file was moved out of', () => {
+  const result = mappedBranchWith((cwd) => {
+    mkdirSync(join(cwd, 'src/shared'), { recursive: true });
+    git(cwd, 'mv', 'src/search/index.js', 'src/shared/find.js');
+  });
+  assert.match(result.stdout, /^feature docs\/feature-map\/search\.md$/m);
+  assert.match(result.stdout, /^unmapped src\/shared\/find\.js$/m);
+});
+
+test('features lists a feature when only its spec changes', () => {
+  const result = mappedBranchWith((cwd) => write(cwd, 'e2e/search.spec.js', 'test("s", () => {});\n'));
+  assert.match(result.stdout, /^feature docs\/feature-map\/search\.md$/m);
+});
+
+test('features warns about a feature file without a Paths line', () => {
+  const result = mappedBranchWith((cwd) => {
+    write(cwd, 'docs/feature-map/export.md', '# Export\n\n**Paths:** src/export\n');
+    write(cwd, 'src/other/x.js', 'export const x = 4;\n');
+  });
+  assert.match(result.stderr, /export\.md has no "Paths:" line.* Fix: /);
+});
+
+test('features reads the map folder named by the guide', () => {
+  const cwd = mappedBranch({ mapDir: 'docs/map', guide: '## Get Ship Done\n\n- feature-map: `docs/map`\n' });
+  assert.match(gsd(['features', '--base', 'main'], { cwd }).stdout, /^feature docs\/map\/search\.md$/m);
+});
+
+const SETUP_DIR = join(HERE, '..', 'skills', 'setup');
+const readSetup = (...path) => readFileSync(join(SETUP_DIR, ...path), 'utf8');
+
+test('the setup skill is user-invoked and writes only section keys gsd config knows', () => {
+  const skill = readSetup('SKILL.md');
+  assert.match(skill, /^disable-model-invocation: true$/m);
+  const keys = [...skill.matchAll(/^- ([a-z][a-z-]*): /gm)].map((line) => line[1]);
+  assert.ok(keys.includes('gate') && keys.includes('docs') && keys.includes('feature-map'), `found keys: ${keys}`);
+  for (const key of keys) assert.ok(CONFIG_KEYS.includes(key), `the setup skill writes unknown key "${key}"`);
+});
+
+test('the shipped example feature works as a feature map entry', () => {
+  const example = readSetup('references', 'feature-map', 'example-feature.md');
+  for (const heading of ['## Sub-features', '## How to reach it', '## Driving it', '## Gotchas']) assert.ok(example.includes(heading), `missing ${heading}`);
+  const cwd = project({
+    'src/search/index.js': 'export const s = 1;\n',
+    'docs/feature-map/README.md': readSetup('references', 'feature-map', 'README.md'),
+    'docs/feature-map/search.md': example,
+  });
+  git(cwd, 'switch', '-q', '-c', 'work');
+  write(cwd, 'src/search/index.js', 'export const s = 2;\n');
+  git(cwd, 'add', '-A');
+  git(cwd, 'commit', '-q', '-m', 'work');
+  const result = gsd(['features', '--base', 'main'], { cwd });
+  assert.match(result.stdout, /^feature docs\/feature-map\/search\.md\n  spec e2e\/search\.spec\.ts$/m);
+});
+
+test('features without a map exits 1 naming setup', () => {
+  const result = gsd(['features', '--base', 'main'], { cwd: branch({}) });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /\/get-ship-done:setup/);
+});
+
 test('diff-check rejects an unknown base ref and names the fix', () => {
   const result = gsd(['diff-check', '--base', 'nope'], { cwd: branch({}) });
   assert.equal(result.status, 1);
@@ -476,7 +587,7 @@ test('every gsd log call in the ship skill uses a known phase', () => {
 
 test('every gsd command the ship skill names exists in the script', () => {
   const named = [...SHIP_SKILL.matchAll(/`gsd ([a-z-]+)/g)].map((call) => call[1]);
-  assert.ok(named.includes('lint') && named.includes('diff-check') && named.includes('config'));
+  for (const expected of ['lint', 'diff-check', 'config', 'features']) assert.ok(named.includes(expected), `the ship skill never names gsd ${expected}`);
   for (const name of named) assert.ok(COMMAND_NAMES.includes(name), `the ship skill names unknown command "gsd ${name}"`);
 });
 
