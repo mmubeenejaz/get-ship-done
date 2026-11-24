@@ -1,0 +1,17 @@
+{
+  "description": "Get Ship Done hard limits: in a session that runs gsd, ask the user before a merge, a ready mark or a push to the base branch, and deny --no-verify.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/gsd.mjs\" guard",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
