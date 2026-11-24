@@ -163,6 +163,9 @@ function criteriaProblems(slug, dir, lane, entries) {
   const problems = [];
   if (numbers.length === 0) problems.push(`no numbered acceptance criteria in ${criteriaFile}. Fix: keep the approved ${basename(criteriaFile)}, with its "## Acceptance criteria" section, in the run folder.`);
   for (const number of required.filter((item) => !logged.has(item))) problems.push(`criterion ${number} has no criterion line. Fix: gsd log ${slug} criterion ${number} test=<path|none> proven=yes|no.`);
+  for (const [number, { test }] of logged) {
+    if (test !== 'none' && !existsSync(join(repoRoot(), test))) problems.push(`criterion ${number} names test=${test}, which is not in the checkout. Fix: log it again with the test file's path from the repository root.`);
+  }
   if (required.length > 0 && !required.some((number) => logged.get(number)?.test !== 'none' && logged.get(number)?.proven === 'yes')) {
     problems.push("no criterion with a test is proven. Fix: break the code under the most important criterion's test, see the test fail, restore the code, and log that criterion with proven=yes.");
   }

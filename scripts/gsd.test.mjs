@@ -709,6 +709,7 @@ const CRITERIA_REFUSALS = [
   ['an uncovered criterion', [BUILT_T1, PROVEN_1, REVIEWED], /criterion 2 has no criterion line\. Fix: gsd log s criterion 2 test=<path\|none> proven=yes\|no/],
   ['a run where no criterion with a test is proven', [BUILT_T1, PROVEN_1.replace('yes', 'no'), LOGGED_2, REVIEWED], /no criterion with a test is proven\. Fix: /],
   ['a run without a review line', [BUILT_T1, PROVEN_1, LOGGED_2], /no review line\. Fix: .*review clean\|changes/],
+  ['a criterion whose test file does not exist', [BUILT_T1, PROVEN_1.replace('src/a.test.js', 'src/gone.test.js'), LOGGED_2, REVIEWED], /criterion 1 names test=src\/gone\.test\.js, which is not in the checkout\. Fix: /],
 ];
 
 for (const [name, lines, expected] of CRITERIA_REFUSALS) {
