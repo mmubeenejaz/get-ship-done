@@ -32,6 +32,7 @@ Draft a `## Get Ship Done` section for the project guide (AGENTS.md, or CLAUDE.m
 - docs: <globs where a new Markdown file may be added>
 - feature-map: <folder of the feature map, default docs/feature-map>
 - verify: <the project's verification skill or command>
+- design: <where the UI tokens and shared components live>
 ```
 
 Show the draft and ask before writing. Then run `gsd config`: it must print the keys with no warning.
@@ -49,6 +50,7 @@ Change nothing in this part. Report what you found and what is missing:
 | Deprecated code | old ways still in the tree that a builder would copy |
 | Tests | a selector, or a feature map that can stand in for one |
 | Docs | where living docs sit; planning files, logs or backups tracked in git |
+| UI tokens | where color, spacing and type tokens and shared components live; the `gsd ui-audit` tally as the baseline; whether a lint rule rejects raw colors and one-off values |
 | Rules without an enforcer | lines in the guide that nothing checks |
 
 For each gap recommend the highest level that removes it: architecture that makes the mistake impossible, then a type, then a lint rule whose error names the fix, then a test, and a line in the guide only for a judgment call. Offer each as its own requirement for `/get-ship-done:ship`; do not fix them here.

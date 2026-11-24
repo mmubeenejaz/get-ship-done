@@ -105,7 +105,7 @@ function parseFlags(args, names) {
 
 const repoRoot = (cwd = process.cwd()) => git(['rev-parse', '--show-toplevel'], cwd)?.trim() ?? cwd;
 
-export const CONFIG_KEYS = ['gate', 'gate-backup', 'preflight', 'precheck', 'selector', 'migration', 'pr-facts', 'tidy', 'subagent-text', 'tests', 'deprecated', 'docs', 'feature-map', 'verify'];
+export const CONFIG_KEYS = ['gate', 'gate-backup', 'preflight', 'precheck', 'selector', 'migration', 'pr-facts', 'tidy', 'subagent-text', 'tests', 'deprecated', 'docs', 'feature-map', 'verify', 'design'];
 const LIST_KEYS = ['tests', 'deprecated', 'docs'];
 const GUIDES = ['AGENTS.md', 'CLAUDE.md'];
 const SECTION = /^##\s+Get Ship Done\s*$/i;
@@ -270,6 +270,74 @@ const STRAY_FILE = /\.(?:log|tmp|bak|orig|rej)$/i;
 const KEPT_DOC = /^(?:README|CHANGELOG)\.md$/i;
 const SLASH_COMMENTS = ['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'mts', 'cts', 'vue', 'svelte', 'go', 'rs', 'java', 'cs', 'kt', 'swift', 'php', 'c', 'h', 'cpp', 'css', 'scss'];
 const HASH_COMMENTS = ['py', 'rb', 'sh', 'bash', 'ps1', 'yml', 'yaml', 'toml'];
+const UI_FILE = /\.(?:css|scss|sass|less|html?|jsx|tsx|vue|svelte|astro)$/i;
+const HUES = 'red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose';
+const DEFAULT_FACES = 'Inter|Roboto|Arial|Geist';
+const UI_SLOP = [
+  {
+    rule: 'ui-gradient',
+    pattern: /\bbg-(?:gradient-to|linear-to|linear-\d|radial|conic)\b|\b(?:linear|radial|conic)-gradient\(/,
+    problem: 'a decorative gradient',
+    fix: 'use a flat surface from the neutral ramp; keep a gradient only where it carries meaning, such as a fade over scrolling content',
+  },
+  { rule: 'ui-gradient-text', pattern: /\bbg-clip-text\b|background-clip:\s*text\b/, problem: 'gradient or clipped text', fix: 'use one solid text color from the palette' },
+  {
+    rule: 'ui-glass-glow',
+    pattern: new RegExp(`\\bbackdrop-blur\\b|backdrop-filter:\\s*blur|\\bblur-(?:2xl|3xl)\\b|\\bshadow-(?:${HUES})-\\d`),
+    problem: 'glass, a blurred blob or a colored glow',
+    fix: 'use a solid surface with a neutral shadow or a border',
+  },
+  { rule: 'ui-transition-all', pattern: /\btransition-all\b|\btransition:\s*all\b/, problem: 'every property is animated', fix: 'name the properties: color, opacity or transform' },
+  {
+    rule: 'ui-looping-motion',
+    pattern: /\banimate-(?:pulse|bounce|ping)\b|animation(?:-iteration-count)?:[^;]*\binfinite\b/,
+    problem: 'a looping animation',
+    fix: 'remove it, or keep it only on a loading placeholder',
+  },
+  { rule: 'ui-hover-lift', pattern: /\bhover:(?:-translate-y-|scale-1\d\d)/, problem: 'a hover lift or grow', fix: 'show hover with a color change; keep movement for press feedback' },
+  {
+    rule: 'ui-emoji',
+    pattern: /(?![©®™↔-↙↩↪])\p{Extended_Pictographic}/u,
+    problem: 'an emoji in the interface',
+    fix: "use the project's icon set, or plain words",
+  },
+  { rule: 'ui-heavy-weight', pattern: /\bfont-(?:extrabold|black)\b|font-weight:\s*(?:800|900)\b/, problem: 'an 800 or 900 weight', fix: 'use 600 at most; build hierarchy with size and color' },
+  {
+    rule: 'ui-tracked-caps',
+    pattern: /^(?=.*\buppercase\b)(?=.*(?:\btracking-(?:wide|wider|widest|\[)|letter-spacing))/,
+    problem: 'an all-caps label with wide tracking',
+    fix: 'use sentence case at a quieter color or size',
+  },
+  {
+    rule: 'ui-one-off-value',
+    pattern: /(?<![\w-])-?(?:[mp][trblxyse]?|gap(?:-[xy])?|space-[xy]|inset(?:-[xy])?|top|right|bottom|left|w|h|min-w|min-h|max-w|max-h|size|rounded(?:-[a-z]{1,2})?|text|leading|tracking|bg|border(?:-[trblxy])?|ring|fill|stroke|from|via|to|shadow)-\[(?:-?[\d.]|#)/,
+    problem: 'a one-off size or color outside the scale',
+    fix: "use the project's spacing, type or color token",
+  },
+  {
+    rule: 'ui-focus-removed',
+    pattern: /\boutline-none\b|\boutline:\s*(?:none|0)\b/,
+    unless: /focus(?:-visible|-within)?:(?:ring|outline|border|shadow)|:focus-visible|tab[iI]ndex=\{?["']?-1\b/,
+    problem: 'the focus outline is removed with no visible replacement',
+    fix: 'keep the outline, or add a focus-visible ring on the same element',
+  },
+  {
+    rule: 'ui-hype-copy',
+    pattern: /\b(?:seamless(?:ly)?|empower(?:s|ing)?|supercharge[sd]?|revolutioni[sz](?:e|es|ing)|game-?changer|cutting-edge|next-level|effortless(?:ly)?|unleash|elevate your|blazing(?:ly)? fast)\b/i,
+    problem: 'hype words in copy',
+    fix: 'say plainly what the thing does',
+  },
+  { rule: 'ui-fake-stat', pattern: /\b\d+(?:\.\d+)?[kKMB]\+|\b99\.\d+%/, problem: 'a round-number claim that may be invented', fix: 'keep it only if the user confirms the figure, otherwise remove it' },
+  {
+    rule: 'ui-default-font',
+    pattern: new RegExp(`(?:font-family|--font-[\\w-]*):\\s*["']?(?:${DEFAULT_FACES})\\b|\\b(?:${DEFAULT_FACES})\\(\\s*\\{`),
+    problem: 'a default face as the whole type personality',
+    fix: 'choose type from the direction; keep a default face only for body text under a face with character',
+  },
+];
+const testFileMatcher = (settings) => (path) => TEST_FILE.test(path) || matchesAny(path, settings.tests ?? []);
+const capped = (lines, limit) => (lines.length > limit ? [...lines.slice(0, limit), `review (${lines.length - limit} more not shown)`] : lines);
+const slopFindings = (text) => UI_SLOP.filter(({ pattern, unless }) => pattern.test(text) && !unless?.test(text));
 const REVIEW_LIMIT = 30;
 const REWRITE_MIN_LINES = 40;
 
@@ -315,7 +383,7 @@ function branchRange(args) {
 function diffCheck(args) {
   const { base, range } = branchRange(args);
   const settings = readConfig(repoRoot())?.values ?? {};
-  const isTest = (path) => TEST_FILE.test(path) || matchesAny(path, settings.tests ?? []);
+  const isTest = testFileMatcher(settings);
   const blocking = [];
   const review = [];
   const block = (where, rule, problem, fix) => blocking.push(`block  ${where} ${rule}: ${problem}. Fix: ${fix}.`);
@@ -345,6 +413,7 @@ function diffCheck(args) {
 
   for (const { path, line, text } of addedLines(range)) {
     const where = `${path}:${line}`;
+    if (UI_FILE.test(path) && !isTest(path)) for (const { rule, problem, fix } of slopFindings(text)) note(where, rule, problem, fix);
     if (isTest(path) && SKIPPED_TEST.test(text)) block(where, 'test-skipped', 'a test is skipped', 'make it pass; if the test itself is wrong, say why in the PR and ask the user');
     if (isTest(path) && FOCUSED_TEST.test(text)) block(where, 'test-focused', 'a focused test stops the rest of the file from running', 'remove the focus before committing');
     if (!PROSE_FILE.test(path) && SUPPRESSION.test(text)) {
@@ -357,8 +426,7 @@ function diffCheck(args) {
     else note(where, 'comment-added', 'a new comment', 'keep it only for a license header, a public API doc, behavior forced by an external system, or a link for a constraint code cannot express; otherwise rename or restructure so the code says it');
   }
 
-  const shown = review.length > REVIEW_LIMIT ? [...review.slice(0, REVIEW_LIMIT), `review (${review.length - REVIEW_LIMIT} more not shown)`] : review;
-  process.stdout.write([...blocking, ...shown, `diff-check: ${blocking.length} blocking, ${review.length} review`].join('\n') + '\n');
+  process.stdout.write([...blocking, ...capped(review, REVIEW_LIMIT),`diff-check: ${blocking.length} blocking, ${review.length} review`].join('\n') + '\n');
   return blocking.length > 0 ? 1 : 0;
 }
 
@@ -415,7 +483,7 @@ function stats([repo = repoName()]) {
 }
 
 const SAME_COMMAND = '[^\\n;&|]*';
-const RUN_COMMAND = /gsd\.mjs["']?\s+(?:log|lint|diff-check|config|stats|features)\b/;
+const RUN_COMMAND = /gsd\.mjs["']?\s+(?:log|lint|diff-check|config|stats|features|ui-audit)\b/;
 const GH_API = '\\bgh(?:\\.exe)?\\s+api\\b[\\s\\S]*?';
 const MERGE = new RegExp(`\\bgh(?:\\.exe)?\\s+pr\\s+merge\\b|${GH_API}(?:/merge\\b|\\bmergePullRequest\\b)`);
 const READY = new RegExp(`\\bgh(?:\\.exe)?\\s+pr\\s+ready\\b(?!${SAME_COMMAND}--undo)|${GH_API}\\bmarkPullRequestReadyForReview\\b`);
@@ -508,14 +576,38 @@ function features(args) {
     if (feature.paths.length === 0) process.stderr.write(`gsd features: ${feature.file} has no "Paths:" line, so no change can touch it. Fix: add a plain line "Paths: <globs>" under its first paragraph.\n`);
   }
   const changed = readDiff(['--name-only', '--no-renames', range]).split('\n').filter(Boolean);
-  const isTest = (path) => TEST_FILE.test(path) || matchesAny(path, settings.tests ?? []);
+  const isTest = testFileMatcher(settings);
   const touched = map.filter((feature) => changed.some((path) => matchesAny(path, [...feature.paths, ...feature.specs])));
   const unmapped = changed.filter((path) => SOURCE_FILE.test(path) && !isTest(path) && !map.some((feature) => matchesAny(path, feature.paths)));
   const lines = [...touched.flatMap((feature) => [`feature ${feature.file}`, ...feature.specs.map((spec) => `  spec ${spec}`)]), ...unmapped.map((path) => `unmapped ${path}`)];
   process.stdout.write([...lines, `features: ${touched.length} touched, ${unmapped.length} unmapped`].join('\n') + '\n');
 }
 
-const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard, features };
+const AUDIT_LIMIT = 50;
+
+function uiAudit(paths) {
+  const where = paths.length > 0 ? paths : ['.'];
+  const tracked = git(['ls-files', '-z', '--full-name', '--', ...where]);
+  if (tracked === null) fail('gsd ui-audit: git could not list the files. Fix: run it from inside the repository.');
+  const root = repoRoot();
+  const isTest = testFileMatcher(readConfig(root)?.values ?? {});
+  const files = tracked.split('\0').filter((path) => UI_FILE.test(path) && !isTest(path) && existsSync(join(root, path)));
+  if (files.length === 0) fail(`gsd ui-audit: no tracked UI file under ${where.join(', ')}. Fix: pass the folder that holds the screens, such as src or app, from inside the repository.`);
+  const findings = [];
+  const counts = new Map();
+  for (const path of files) {
+    readFileSync(join(root, path), 'utf8').split(/\r?\n/).forEach((text, index) => {
+      for (const { rule, problem, fix } of slopFindings(text)) {
+        findings.push(`review ${path}:${index + 1} ${rule}: ${problem}. Fix: ${fix}.`);
+        tally(counts, rule);
+      }
+    });
+  }
+  process.stdout.write([...capped(findings, AUDIT_LIMIT), `ui-audit rules: ${listed(counts)}`, `ui-audit: ${files.length} files, ${findings.length} findings`].join('\n') + '\n');
+  return 0;
+}
+
+const COMMANDS = { log, config, lint, 'diff-check': diffCheck, stats, guard, features, 'ui-audit': uiAudit };
 export const COMMAND_NAMES = Object.keys(COMMANDS);
 
 function main(argv) {
